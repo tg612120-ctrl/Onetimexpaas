@@ -1,8 +1,7 @@
 .env
 __pycache__/
 *.pyc
-sessions/*
-!sessions/.gitkeep
-*.session
-*.session-journal
-*.zip
+.venv/
+venv/
+.idea/
+.vscode/
