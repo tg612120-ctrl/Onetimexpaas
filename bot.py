@@ -25,7 +25,7 @@ db = mongo[DATABASE_NAME]
 users = db.users
 deposits = db.deposits
 
-AMOUNT, UPI_PROOF, REDEEM_PROOF = range(3)
+AMOUNT, UPI_PROOF, REDEEM_PROOF, REDEEM_SCREENSHOT = range(4)
 
 def now():
     return datetime.now(timezone.utc)
@@ -170,7 +170,8 @@ async def amount_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"🎁 GOOGLE PLAY REDEEM CODE\n━━━━━━━━━━━━━━━━━━\n\n"
             f"💰 Deposit Amount: ₹{amount}\n\n"
-            "📸 Send your redeem code along with a screenshot/proof of purchase.\n\n"
+            "📸 First send your redeem code.\n"
+            "Then send a screenshot/proof of purchase.\n\n"
             "⚠️ NOTE:\n"
             "• Submit codes only from legitimate/authorized sources.\n"
             "• The code must be unused and valid.\n"
@@ -194,8 +195,27 @@ async def paid_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["waiting_proof"] = True
     return UPI_PROOF
 
+async def redeem_code_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    code = (update.message.text or "").strip()
+    if not code:
+        await update.message.reply_text("❌ Please send a valid redeem code.")
+        return REDEEM_PROOF
+
+    context.user_data["redeem_code"] = code
+    await update.message.reply_text(
+        "✅ Redeem code received.\n\n"
+        "📸 Now send your purchase screenshot.\n"
+        "Please send a clear screenshot of the purchase/proof."
+    )
+    return REDEEM_SCREENSHOT
+
 async def proof_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("waiting_proof"):
+    if context.user_data.get("deposit_method") == "Google Play Redeem Code":
+        waiting = context.user_data.get("redeem_code")
+    else:
+        waiting = context.user_data.get("waiting_proof")
+
+    if not waiting:
         return ConversationHandler.END
 
     method = context.user_data.get("deposit_method")
@@ -203,7 +223,7 @@ async def proof_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not update.message.photo:
         await update.message.reply_text("❌ Please send the screenshot as an image.")
-        return UPI_PROOF if method == "UPI" else REDEEM_PROOF
+        return UPI_PROOF if method == "UPI" else REDEEM_SCREENSHOT
 
     file_id = update.message.photo[-1].file_id
     deposit = {
@@ -216,6 +236,8 @@ async def proof_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "status": "pending",
         "created_at": now(),
     }
+    if method == "Google Play Redeem Code":
+        deposit["redeem_code"] = context.user_data.get("redeem_code")
     result = deposits.insert_one(deposit)
 
     await update.message.reply_text(
@@ -231,7 +253,8 @@ async def proof_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🆔 User ID: {update.effective_user.id}\n"
         f"💰 Amount: ₹{amount}\n"
         f"📌 Method: {method}\n"
-        f"🆔 Request: {result.inserted_id}\n\n"
+        + (f"🎁 Redeem Code: {context.user_data.get('redeem_code')}\n" if method == "Google Play Redeem Code" else "")
+        + f"🆔 Request: {result.inserted_id}\n\n"
         "Review the attached proof and approve/reject manually."
     )
     keyboard = InlineKeyboardMarkup([[
@@ -295,6 +318,9 @@ def main():
                 MessageHandler(filters.PHOTO, proof_received),
             ],
             REDEEM_PROOF: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, redeem_code_received),
+            ],
+            REDEEM_SCREENSHOT: [
                 MessageHandler(filters.PHOTO, proof_received),
             ],
         },
