@@ -67,19 +67,84 @@ def add_funds_menu():
 def back_home():
     return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="home")]])
 
+FORCE_JOIN_CHATS = [
+    ("🇮🇳 Support Channel", "@zyXzo", "https://t.me/zyXzo"),
+    ("📋 Logs Channel", "@arcfluxx", "https://t.me/arcfluxx"),
+    ("👥 Support Group", "@genzportals", "https://t.me/genzportals"),
+]
+
+
+def force_join_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(name, url=url)]
+        for name, _, url in FORCE_JOIN_CHATS
+    ] + [
+        [InlineKeyboardButton("✅ I HAVE JOINED ALL", callback_data="verify_join")]
+    ])
+
+
+async def check_force_join(bot, user_id):
+    for _, chat_id, _ in FORCE_JOIN_CHATS:
+        try:
+            member = await bot.get_chat_member(chat_id, user_id)
+            if member.status in ("left", "kicked"):
+                return False
+            if member.status == "restricted" and getattr(member, "is_member", False) is False:
+                return False
+        except Exception as exc:
+            logger.warning("Force-join check failed for %s: %s", chat_id, exc)
+            return False
+    return True
+
+
+async def send_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "🔒 JOIN TO CONTINUE\n"
+        "━━━━━━━━━━━━━━━━━━\n\n"
+        "Please join all the channels and the support group below to use this bot.\n\n"
+        "Once you have joined all three, tap Verify to continue.\n\n"
+        "You need to be a member of all 3 for verification to pass."
+    )
+    return await update.message.reply_text(text, reply_markup=force_join_menu())
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ensure_user(update.effective_user)
-    # Force-join will be added in the next update.
-    await update.message.reply_text(
-        f"👋 Welcome, {update.effective_user.first_name}!\n\n"
-        "🛒 Browse products and manage your wallet from the menu below.",
-        reply_markup=main_menu()
+    await send_force_join(update, context)
+
+
+async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+
+    if not await check_force_join(context.bot, q.from_user.id):
+        await q.answer(
+            "❌ You have not joined all required channels/groups yet.",
+            show_alert=True,
+        )
+        return
+
+    try:
+        await q.message.delete()
+    except Exception:
+        pass
+
+    await context.bot.send_message(
+        chat_id=q.from_user.id,
+        text=(
+            f"👋 Welcome, {q.from_user.first_name}!\n\n"
+            "🛒 Browse products and manage your wallet from the menu below."
+        ),
+        reply_markup=main_menu(),
     )
 
 async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
     ensure_user(q.from_user)
+
+    if q.data == "verify_join":
+        await verify_join_callback(update, context)
+        return
 
     if q.data == "home":
         await q.edit_message_text(
