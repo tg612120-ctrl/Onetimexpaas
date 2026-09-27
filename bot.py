@@ -79,7 +79,7 @@ def get_product_session_reference(product_id):
     )
     return doc
 
-AMOUNT, UPI_PROOF, REDEEM_PROOF, REDEEM_SCREENSHOT, PRODUCT_NAME = range(5)
+AMOUNT, UPI_PROOF, REDEEM_PROOF, REDEEM_SCREENSHOT, PRODUCT_NAME, SUBPRODUCT_NAME, SUBPRODUCT_DETAILS, SUBPRODUCT_PRICE, SUBPRODUCT_WATCHER = range(9)
 
 def now():
     return datetime.now(timezone.utc)
@@ -138,24 +138,50 @@ def admin_back():
 
 def admin_products_menu():
     buttons = []
-    for product in products.find({"active": {"$ne": False}}).sort("created_at", 1):
+    for product in products.find({"active": {"$ne": False}, "type": {"$ne": "subproduct"}}).sort("created_at", 1):
         buttons.append([InlineKeyboardButton(
-            f"🛍️ {product.get('name', 'Unnamed Product')}",
-            callback_data=f"admin_product:{product['_id']}"
+            f"📁 {product.get('name', 'Unnamed Heading')}",
+            callback_data=f"admin_heading:{product['_id']}"
         )])
-    buttons.append([InlineKeyboardButton("➕ Add New Product", callback_data="admin_add_product")])
+    buttons.append([InlineKeyboardButton("➕ Add New Heading", callback_data="admin_add_product")])
     buttons.append([InlineKeyboardButton("⬅️ Admin Panel", callback_data="admin_panel")])
     return InlineKeyboardMarkup(buttons)
 
+
 def user_products_menu():
     buttons = []
-    for product in products.find({"active": {"$ne": False}}).sort("created_at", 1):
+    for product in products.find({"active": {"$ne": False}, "type": "heading"}).sort("created_at", 1):
         buttons.append([InlineKeyboardButton(
-            f"🛍️ {product.get('name', 'Unnamed Product')}",
-            callback_data=f"buy_product:{product['_id']}"
+            f"📁 {product.get('name', 'Unnamed Heading')}",
+            callback_data=f"buy_heading:{product['_id']}"
         )])
     buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="home")])
     return InlineKeyboardMarkup(buttons)
+
+
+def admin_heading_menu(heading_id):
+    from bson import ObjectId
+    buttons = []
+    for item in products.find({"active": {"$ne": False}, "type": "subproduct", "parent_id": str(heading_id)}).sort("created_at", 1):
+        buttons.append([InlineKeyboardButton(
+            f"🛍️ {item.get('name', 'Unnamed Sub-Product')} — ₹{item.get('price', 0)}",
+            callback_data=f"admin_subproduct:{item['_id']}"
+        )])
+    buttons.append([InlineKeyboardButton("➕ Add New Sub-Product", callback_data=f"admin_add_subproduct:{heading_id}")])
+    buttons.append([InlineKeyboardButton("⬅️ Products / Accounts", callback_data="admin_products")])
+    return InlineKeyboardMarkup(buttons)
+
+
+def user_subproducts_menu(heading_id):
+    buttons = []
+    for item in products.find({"active": {"$ne": False}, "type": "subproduct", "parent_id": str(heading_id)}).sort("created_at", 1):
+        buttons.append([InlineKeyboardButton(
+            f"🛍️ {item.get('name', 'Unnamed Sub-Product')} — ₹{item.get('price', 0)}",
+            callback_data=f"buy_subproduct:{item['_id']}"
+        )])
+    buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="buy")])
+    return InlineKeyboardMarkup(buttons)
+
 
 FORCE_JOIN_CHATS = [
     ("🇮🇳 Support Channel", "@zyXzo", "https://t.me/zyXzo"),
@@ -303,82 +329,104 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=admin_back()
             )
         elif action == "admin_products":
-            total = products.count_documents({"active": {"$ne": False}})
+            total = products.count_documents({"active": {"$ne": False}, "type": {"$ne": "subproduct"}})
             await q.edit_message_text(
                 f"🛍️ PRODUCTS / ACCOUNTS\n━━━━━━━━━━━━━━━━━━\n\n"
-                f"Total products: {total}\n\n"
-                "Select a product or add a new one:",
+                f"Total headings: {total}\n\n"
+                "Main headings are categories only. Open a heading to manage its sellable sub-products.",
                 reply_markup=admin_products_menu()
             )
             return
         elif action == "admin_add_product":
             await q.edit_message_text(
-                "➕ ADD NEW PRODUCT\n━━━━━━━━━━━━━━━━━━\n\n"
-                "Send the product name.",
+                "➕ ADD NEW HEADING\n━━━━━━━━━━━━━━━━━━\n\n"
+                "Send the heading/category name.\n\n"
+                "Example: 🇮🇳 INDIA",
                 reply_markup=admin_back()
             )
             return PRODUCT_NAME
-        elif action.startswith("admin_product:"):
+        elif action.startswith("admin_heading:"):
             from bson import ObjectId
             raw_id = action.split(":", 1)[1]
             try:
-                product = products.find_one({"_id": ObjectId(raw_id), "active": {"$ne": False}})
+                heading = products.find_one({"_id": ObjectId(raw_id), "active": {"$ne": False}})
             except Exception:
-                product = None
-            if not product:
-                await q.answer("Product not found.", show_alert=True)
+                heading = None
+            if not heading:
+                await q.answer("Heading not found.", show_alert=True)
                 return
-            product_id = str(product["_id"])
             await q.edit_message_text(
-                f"🛍️ {product.get('name', 'Unnamed Product')}\n\n"
-                "Product added successfully.\n\n"
-                "Select an option below:",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🗑️ Delete Product", callback_data=f"admin_delete_product:{product_id}")],
-                    [InlineKeyboardButton("⬅️ Products / Accounts", callback_data="admin_products")],
-                ])
+                f"📁 {heading.get('name', 'Unnamed Heading')}\n\n"
+                "This is a heading/category, not a sellable item.\n"
+                "Choose a sub-product below:",
+                reply_markup=admin_heading_menu(raw_id)
             )
             return
-        elif action.startswith("admin_delete_product:"):
+        elif action.startswith("admin_add_subproduct:"):
+            raw_id = action.split(":", 1)[1]
+            context.user_data["subproduct_parent_id"] = raw_id
+            await q.edit_message_text(
+                "➕ ADD NEW SUB-PRODUCT\n━━━━━━━━━━━━━━━━━━\n\n"
+                "Please send the sub-product name.",
+                reply_markup=admin_back()
+            )
+            return SUBPRODUCT_NAME
+        elif action.startswith("admin_subproduct:"):
             from bson import ObjectId
             raw_id = action.split(":", 1)[1]
             try:
-                product = products.find_one({"_id": ObjectId(raw_id), "active": {"$ne": False}})
+                item = products.find_one({"_id": ObjectId(raw_id), "type": "subproduct", "active": {"$ne": False}})
             except Exception:
-                product = None
-            if not product:
-                await q.answer("Product not found or already deleted.", show_alert=True)
+                item = None
+            if not item:
+                await q.answer("Sub-product not found.", show_alert=True)
                 return
-            product_id = str(product["_id"])
             await q.edit_message_text(
-                f"⚠️ DELETE PRODUCT\n━━━━━━━━━━━━━━━━━━\n\n"
-                f"Are you sure you want to delete:\n\n🛍️ {product.get('name', 'Unnamed Product')}\n\n"
-                "This will remove it from the product lists.",
+                f"🛍️ {item.get('name', 'Unnamed Sub-Product')}\n\n"
+                f"💰 Price: ₹{item.get('price', 0)}\n"
+                f"👤 Watcher ID: {item.get('watcher_user_id', 'Not set')}\n\n"
+                f"📝 Details:\n{item.get('details', 'No details')}",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("✅ YES, DELETE", callback_data=f"admin_delete_confirm:{product_id}")],
-                    [InlineKeyboardButton("❌ Cancel", callback_data=f"admin_product:{product_id}")],
+                    [InlineKeyboardButton("🗑️ Delete Sub-Product", callback_data=f"admin_delete_subproduct:{raw_id}")],
+                    [InlineKeyboardButton("⬅️ Back to Heading", callback_data=f"admin_heading:{item.get('parent_id')}")]
                 ])
             )
             return
-        elif action.startswith("admin_delete_confirm:"):
+        elif action.startswith("admin_delete_subproduct:"):
+            from bson import ObjectId
+            raw_id = action.split(":", 1)[1]
+            try:
+                item = products.find_one({"_id": ObjectId(raw_id), "type": "subproduct", "active": {"$ne": False}})
+            except Exception:
+                item = None
+            if not item:
+                await q.answer("Sub-product not found or already deleted.", show_alert=True)
+                return
+            await q.edit_message_text(
+                f"⚠️ DELETE SUB-PRODUCT\n━━━━━━━━━━━━━━━━━━\n\n"
+                f"Delete: {item.get('name', 'Unnamed Sub-Product')}?",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ YES, DELETE", callback_data=f"admin_delete_subproduct_confirm:{raw_id}")],
+                    [InlineKeyboardButton("❌ Cancel", callback_data=f"admin_subproduct:{raw_id}")]
+                ])
+            )
+            return
+        elif action.startswith("admin_delete_subproduct_confirm:"):
             from bson import ObjectId
             raw_id = action.split(":", 1)[1]
             try:
                 oid = ObjectId(raw_id)
             except Exception:
-                await q.answer("Invalid product.", show_alert=True)
+                await q.answer("Invalid sub-product.", show_alert=True)
                 return
-            product = products.find_one({"_id": oid, "active": {"$ne": False}})
-            if not product:
-                await q.answer("Product not found or already deleted.", show_alert=True)
+            item = products.find_one({"_id": oid, "type": "subproduct", "active": {"$ne": False}})
+            if not item:
+                await q.answer("Sub-product not found or already deleted.", show_alert=True)
                 return
-            products.update_one(
-                {"_id": oid},
-                {"$set": {"active": False, "deleted_at": now(), "updated_at": now()}}
-            )
+            products.update_one({"_id": oid}, {"$set": {"active": False, "deleted_at": now(), "updated_at": now()}})
             await q.edit_message_text(
-                f"✅ Product deleted successfully.\n\n🛍️ {product.get('name', 'Unnamed Product')}",
-                reply_markup=admin_products_menu()
+                f"✅ Sub-product deleted successfully.\n\n🛍️ {item.get('name', 'Unnamed Sub-Product')}",
+                reply_markup=admin_heading_menu(item.get("parent_id"))
             )
             return
         elif action == "admin_stats":
@@ -445,35 +493,89 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return AMOUNT
 
     elif q.data == "buy":
-        total = products.count_documents({"active": {"$ne": False}})
+        total = products.count_documents({"active": {"$ne": False}, "type": "heading"})
         if total == 0:
-            await q.edit_message_text(
-                "🛒 BUY NOW\n━━━━━━━━━━━━━━━━━━\n\n"
-                "No products are available right now.",
-                reply_markup=back_home()
-            )
+            await q.edit_message_text("🛒 BUY NOW\n━━━━━━━━━━━━━━━━━━\n\nNo product headings are available right now.", reply_markup=back_home())
         else:
-            await q.edit_message_text(
-                "🛒 BUY NOW\n━━━━━━━━━━━━━━━━━━\n\n"
-                "Select a product:",
-                reply_markup=user_products_menu()
-            )
+            await q.edit_message_text("🛒 BUY NOW\n━━━━━━━━━━━━━━━━━━\n\nSelect a category:", reply_markup=user_products_menu())
 
-    elif q.data.startswith("buy_product:"):
+    elif q.data.startswith("buy_heading:"):
         from bson import ObjectId
         raw_id = q.data.split(":", 1)[1]
         try:
-            product = products.find_one({"_id": ObjectId(raw_id), "active": {"$ne": False}})
+            heading = products.find_one({"_id": ObjectId(raw_id), "type": "heading", "active": {"$ne": False}})
         except Exception:
-            product = None
-        if not product:
-            await q.answer("Product not found.", show_alert=True)
+            heading = None
+        if not heading:
+            await q.answer("Heading not found.", show_alert=True)
+            return
+        count = products.count_documents({"active": {"$ne": False}, "type": "subproduct", "parent_id": raw_id})
+        if count == 0:
+            await q.edit_message_text(f"📁 {heading.get('name', 'Heading')}\n\nNo sub-products available right now.", reply_markup=user_products_menu())
+        else:
+            await q.edit_message_text(f"📁 {heading.get('name', 'Heading')}\n\nSelect a sub-product:", reply_markup=user_subproducts_menu(raw_id))
+
+    elif q.data.startswith("buy_subproduct:"):
+        from bson import ObjectId
+        raw_id = q.data.split(":", 1)[1]
+        try:
+            item = products.find_one({"_id": ObjectId(raw_id), "type": "subproduct", "active": {"$ne": False}})
+        except Exception:
+            item = None
+        if not item:
+            await q.answer("This sub-product is no longer available.", show_alert=True)
             return
         await q.edit_message_text(
-            f"🛍️ {product.get('name', 'Unnamed Product')}\n\n"
-            "Product details and purchase options will be added next.",
-            reply_markup=user_products_menu()
+            f"🛍️ {item.get('name', 'Sub-Product')}\n\n"
+            f"💰 Price: ₹{item.get('price', 0)}\n\n"
+            f"📝 {item.get('details', 'No details available.') }\n\n"
+            "Please confirm to buy.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Confirm Purchase", callback_data=f"confirm_purchase:{raw_id}")],
+                [InlineKeyboardButton("⬅️ Back", callback_data=f"buy_heading:{item.get('parent_id')}")]
+            ])
         )
+
+    elif q.data.startswith("confirm_purchase:"):
+        from bson import ObjectId
+        raw_id = q.data.split(":", 1)[1]
+        try:
+            oid = ObjectId(raw_id)
+        except Exception:
+            await q.answer("Invalid product.", show_alert=True)
+            return
+        item = products.find_one({"_id": oid, "type": "subproduct", "active": True})
+        if not item:
+            await q.answer("Already sold or unavailable.", show_alert=True)
+            return
+        price = int(item.get("price", 0))
+        result = users.update_one({"user_id": q.from_user.id, "balance": {"$gte": price}}, {"$inc": {"balance": -price}, "$set": {"updated_at": now()}})
+        if result.modified_count != 1:
+            await q.answer("❌ Insufficient wallet balance.", show_alert=True)
+            return
+        # Atomic stock lock: only one buyer can claim this one-time sub-product.
+        sold = products.update_one({"_id": oid, "type": "subproduct", "active": True}, {"$set": {"active": False, "sold_to": q.from_user.id, "sold_at": now(), "updated_at": now()}})
+        if sold.modified_count != 1:
+            users.update_one({"user_id": q.from_user.id}, {"$inc": {"balance": price}})
+            await q.answer("This item was just sold to someone else. Your balance was restored.", show_alert=True)
+            return
+        order = orders.insert_one({"user_id": q.from_user.id, "product_id": str(oid), "product_name": item.get("name"), "amount": price, "status": "completed", "created_at": now()})
+        await q.edit_message_text(
+            "✅ Purchase Successful\n━━━━━━━━━━━━━━━━━━\n\n"
+            f"🛍️ {item.get('name', 'Sub-Product')}\n"
+            f"💰 Paid: ₹{price}\n"
+            f"🧾 Order ID: {order.inserted_id}\n\n"
+            f"📝 Details:\n{item.get('details', 'No details available.')}\n\n"
+            "Your item has been reserved successfully. Use Get when delivery is available.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 Get", callback_data=f"get_product:{order.inserted_id}")], [InlineKeyboardButton("⬅️ Home", callback_data="home")]])
+        )
+        try:
+            await context.bot.send_message(OWNER_ID, f"🛒 New product sold\n\n👤 User ID: {q.from_user.id}\n🛍️ {item.get('name')}\n💰 ₹{price}\n🧾 Order: {order.inserted_id}")
+        except Exception:
+            pass
+
+    elif q.data.startswith("get_product:"):
+        await q.answer("Delivery connector is not configured in this bot build.", show_alert=True)
 
     elif q.data == "orders":
         await q.edit_message_text("📦 MY ORDERS\n\nNo orders yet.", reply_markup=back_home())
@@ -499,35 +601,97 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def product_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         return ConversationHandler.END
-
     name = (update.message.text or "").strip()
     if not name:
-        await update.message.reply_text("❌ Please send a valid product name.")
+        await update.message.reply_text("❌ Please send a valid heading name.")
         return PRODUCT_NAME
-
-    existing = products.find_one({"name": name, "active": {"$ne": False}})
+    existing = products.find_one({"name": name, "active": {"$ne": False}, "type": {"$ne": "subproduct"}})
     if existing:
-        await update.message.reply_text(
-            "❌ A product with this name already exists.\n\n"
-            "Please send a different product name."
-        )
+        await update.message.reply_text("❌ This heading already exists. Send a different heading name.")
         return PRODUCT_NAME
+    products.insert_one({"name": name, "type": "heading", "active": True, "created_at": now(), "updated_at": now()})
+    await update.message.reply_text(f"✅ Heading added: {name}\n\nOpen Admin Panel → Products / Accounts to add sub-products inside it.")
+    return ConversationHandler.END
 
-    products.insert_one({
-        "name": name,
+
+async def subproduct_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        return ConversationHandler.END
+    name = (update.message.text or "").strip()
+    if not name:
+        await update.message.reply_text("❌ Please send a valid sub-product name.")
+        return SUBPRODUCT_NAME
+    parent_id = context.user_data.get("subproduct_parent_id")
+    if not parent_id:
+        await update.message.reply_text("❌ Heading context expired. Open the heading again.")
+        return ConversationHandler.END
+    context.user_data["subproduct_name"] = name
+    await update.message.reply_text("📝 Please send the product details.")
+    return SUBPRODUCT_DETAILS
+
+
+async def subproduct_details_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        return ConversationHandler.END
+    details = (update.message.text or "").strip()
+    if not details:
+        await update.message.reply_text("❌ Please send valid product details.")
+        return SUBPRODUCT_DETAILS
+    context.user_data["subproduct_details"] = details
+    await update.message.reply_text("💰 Please send the price in ₹. Example: 20")
+    return SUBPRODUCT_PRICE
+
+
+async def subproduct_price_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        return ConversationHandler.END
+    try:
+        price = int((update.message.text or "").strip().replace(",", ""))
+        if price <= 0:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text("❌ Send a valid positive whole-number price, e.g. 20.")
+        return SUBPRODUCT_PRICE
+    context.user_data["subproduct_price"] = price
+    await update.message.reply_text("👤 Please send the watcher User ID (numeric). This is stored only as metadata; this bot build does not log into or monitor Telegram user accounts.")
+    return SUBPRODUCT_WATCHER
+
+
+async def subproduct_watcher_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        return ConversationHandler.END
+    try:
+        watcher_id = int((update.message.text or "").strip())
+    except ValueError:
+        await update.message.reply_text("❌ Please send a numeric Telegram User ID.")
+        return SUBPRODUCT_WATCHER
+    parent_id = context.user_data.get("subproduct_parent_id")
+    parent = None
+    try:
+        from bson import ObjectId
+        parent = products.find_one({"_id": ObjectId(parent_id), "type": "heading", "active": True})
+    except Exception:
+        pass
+    if not parent:
+        await update.message.reply_text("❌ Heading not found. Please start again from Admin Panel.")
+        context.user_data.clear()
+        return ConversationHandler.END
+    doc = {
+        "name": context.user_data["subproduct_name"],
+        "type": "subproduct",
+        "parent_id": str(parent_id),
+        "details": context.user_data["subproduct_details"],
+        "price": context.user_data["subproduct_price"],
+        "watcher_user_id": watcher_id,
         "active": True,
         "created_at": now(),
         "updated_at": now(),
-    })
-
-    await update.message.reply_text(
-        f"✅ Product button added successfully.\n\n"
-        f"🛍️ Product: {name}\n\n"
-        "The product is now available automatically in Admin Panel → Products / Accounts "
-        "and in users' Buy Now menu."
-    )
-    context.user_data.pop("product_name", None)
+    }
+    products.insert_one(doc)
+    await update.message.reply_text(f"✅ Sub-product added successfully.\n\n🛍️ {doc['name']}\n💰 ₹{doc['price']}\n👤 Watcher ID: {watcher_id}\n\nIt is now visible under its heading for buyers.")
+    context.user_data.clear()
     return ConversationHandler.END
+
 
 async def amount_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip().replace(",", "")
@@ -830,12 +994,19 @@ async def admin_balance_command(update: Update, context: ContextTypes.DEFAULT_TY
     except Exception:
         pass
 
+def migrate_legacy_products():
+    # Existing active product records are treated as non-sellable headings so the
+    # new Heading -> Sub-Product hierarchy does not hide existing data.
+    products.update_many({"type": {"$exists": False}}, {"$set": {"type": "heading", "updated_at": now()}})
+
+
 def main():
+    migrate_legacy_products()
     app = Application.builder().token(BOT_TOKEN).build()
 
     conv = ConversationHandler(
         entry_points=[
-            CallbackQueryHandler(callbacks, pattern=r"^(pay_upi|pay_redeem|admin_add_product)$"),
+            CallbackQueryHandler(callbacks, pattern=r"^(pay_upi|pay_redeem|admin_add_product|admin_add_subproduct:[0-9a-f]+)$"),
         ],
         states={
             AMOUNT: [
@@ -853,6 +1024,18 @@ def main():
             ],
             PRODUCT_NAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, product_name_received),
+            ],
+            SUBPRODUCT_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, subproduct_name_received),
+            ],
+            SUBPRODUCT_DETAILS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, subproduct_details_received),
+            ],
+            SUBPRODUCT_PRICE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, subproduct_price_received),
+            ],
+            SUBPRODUCT_WATCHER: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, subproduct_watcher_received),
             ],
         },
         fallbacks=[CallbackQueryHandler(callbacks)],
