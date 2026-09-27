@@ -24,8 +24,10 @@ mongo = MongoClient(MONGO_URI)
 db = mongo[DATABASE_NAME]
 users = db.users
 deposits = db.deposits
+orders = db.orders
+products = db.products
 
-AMOUNT, UPI_PROOF, REDEEM_PROOF, REDEEM_SCREENSHOT = range(4)
+AMOUNT, UPI_PROOF, REDEEM_PROOF, REDEEM_SCREENSHOT, PRODUCT_NAME = range(5)
 
 def now():
     return datetime.now(timezone.utc)
@@ -48,14 +50,17 @@ def ensure_user(tg_user):
         upsert=True,
     )
 
-def main_menu():
-    return InlineKeyboardMarkup([
+def main_menu(user_id=None):
+    buttons = [
         [InlineKeyboardButton("🛒 Buy Now", callback_data="buy"),
          InlineKeyboardButton("💳 Add Funds", callback_data="add_funds")],
         [InlineKeyboardButton("📦 My Orders", callback_data="orders")],
         [InlineKeyboardButton("🆘 Support", callback_data="support"),
          InlineKeyboardButton("👤 My Profile", callback_data="profile")],
-    ])
+    ]
+    if user_id == OWNER_ID:
+        buttons.append([InlineKeyboardButton("⚙️ Admin Panel", callback_data="admin_panel")])
+    return InlineKeyboardMarkup(buttons)
 
 def add_funds_menu():
     return InlineKeyboardMarkup([
@@ -66,6 +71,39 @@ def add_funds_menu():
 
 def back_home():
     return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="home")]])
+
+def admin_panel_menu():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("👥 Users", callback_data="admin_users"), InlineKeyboardButton("💰 Balance Management", callback_data="admin_balance")],
+        [InlineKeyboardButton("💳 Deposit Requests", callback_data="admin_deposits"), InlineKeyboardButton("📦 Orders", callback_data="admin_orders")],
+        [InlineKeyboardButton("🛍️ Products / Accounts", callback_data="admin_products"), InlineKeyboardButton("📊 Statistics", callback_data="admin_stats")],
+        [InlineKeyboardButton("📢 Broadcast", callback_data="admin_broadcast"), InlineKeyboardButton("⚙️ Settings", callback_data="admin_settings")],
+        [InlineKeyboardButton("⬅️ Back", callback_data="home")],
+    ])
+
+def admin_back():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Admin Panel", callback_data="admin_panel")]])
+
+def admin_products_menu():
+    buttons = []
+    for product in products.find({"active": {"$ne": False}}).sort("created_at", 1):
+        buttons.append([InlineKeyboardButton(
+            f"🛍️ {product.get('name', 'Unnamed Product')}",
+            callback_data=f"admin_product:{product['_id']}"
+        )])
+    buttons.append([InlineKeyboardButton("➕ Add New Product", callback_data="admin_add_product")])
+    buttons.append([InlineKeyboardButton("⬅️ Admin Panel", callback_data="admin_panel")])
+    return InlineKeyboardMarkup(buttons)
+
+def user_products_menu():
+    buttons = []
+    for product in products.find({"active": {"$ne": False}}).sort("created_at", 1):
+        buttons.append([InlineKeyboardButton(
+            f"🛍️ {product.get('name', 'Unnamed Product')}",
+            callback_data=f"buy_product:{product['_id']}"
+        )])
+    buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="home")])
+    return InlineKeyboardMarkup(buttons)
 
 FORCE_JOIN_CHATS = [
     ("🇮🇳 Support Channel", "@zyXzo", "https://t.me/zyXzo"),
@@ -117,7 +155,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"👋 Welcome, {update.effective_user.first_name}!\n\n"
             "🛒 Browse products and manage your wallet from the menu below.",
-            reply_markup=main_menu(),
+            reply_markup=main_menu(update.effective_user.id),
         )
         return
 
@@ -145,7 +183,7 @@ async def verify_join_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             f"👋 Welcome, {q.from_user.first_name}!\n\n"
             "🛒 Browse products and manage your wallet from the menu below."
         ),
-        reply_markup=main_menu(),
+        reply_markup=main_menu(q.from_user.id),
     )
 
 async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -157,11 +195,134 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await verify_join_callback(update, context)
         return
 
+    if q.data == "admin_panel":
+        if q.from_user.id != OWNER_ID:
+            await q.answer("Not authorized.", show_alert=True)
+            return
+        await q.edit_message_text(
+            "🔐 ADMIN PANEL\n━━━━━━━━━━━━━━━━━━\n\n"
+            "Select an option below:",
+            reply_markup=admin_panel_menu()
+        )
+        return
+
+    if q.data.startswith("admin_"):
+        if q.from_user.id != OWNER_ID:
+            await q.answer("Not authorized.", show_alert=True)
+            return
+        action = q.data
+        if action == "admin_users":
+            total = users.count_documents({})
+            await q.edit_message_text(
+                f"👥 USERS\n━━━━━━━━━━━━━━━━━━\n\nTotal users: {total}\n\n"
+                "Search: use the Balance Management option for direct user ID adjustments.",
+                reply_markup=admin_back()
+            )
+        elif action == "admin_balance":
+            await q.edit_message_text(
+                "💰 BALANCE MANAGEMENT\n━━━━━━━━━━━━━━━━━━\n\n"
+                "Use these owner-only commands in DM:\n"
+                "Dd 70 USER_ID\n"
+                "Ss 70 USER_ID\n\n"
+                "In @genzportals, reply to a user's message with:\n"
+                "Dd 70\nSs 70",
+                reply_markup=admin_back()
+            )
+        elif action == "admin_deposits":
+            pending = deposits.count_documents({"status": "pending"})
+            upi = deposits.count_documents({"status": "pending", "method": "UPI"})
+            gp = deposits.count_documents({"status": "pending", "method": "Google Play Redeem Code"})
+            await q.edit_message_text(
+                f"💳 DEPOSIT REQUESTS\n━━━━━━━━━━━━━━━━━━\n\n"
+                f"Pending: {pending}\n"
+                f"UPI: {upi}\n"
+                f"Google Play: {gp}\n\n"
+                "New requests are sent directly to your owner DM with Approve / Reject buttons.",
+                reply_markup=admin_back()
+            )
+        elif action == "admin_orders":
+            total = orders.count_documents({})
+            pending = orders.count_documents({"status": "pending"})
+            completed = orders.count_documents({"status": "completed"})
+            cancelled = orders.count_documents({"status": "cancelled"})
+            await q.edit_message_text(
+                f"📦 ORDERS\n━━━━━━━━━━━━━━━━━━\n\n"
+                f"Total: {total}\nPending: {pending}\nCompleted: {completed}\nCancelled: {cancelled}",
+                reply_markup=admin_back()
+            )
+        elif action == "admin_products":
+            total = products.count_documents({"active": {"$ne": False}})
+            await q.edit_message_text(
+                f"🛍️ PRODUCTS / ACCOUNTS\n━━━━━━━━━━━━━━━━━━\n\n"
+                f"Total products: {total}\n\n"
+                "Select a product or add a new one:",
+                reply_markup=admin_products_menu()
+            )
+            return
+        elif action == "admin_add_product":
+            await q.edit_message_text(
+                "➕ ADD NEW PRODUCT\n━━━━━━━━━━━━━━━━━━\n\n"
+                "Send the product name.",
+                reply_markup=admin_back()
+            )
+            return PRODUCT_NAME
+        elif action.startswith("admin_product:"):
+            from bson import ObjectId
+            raw_id = action.split(":", 1)[1]
+            try:
+                product = products.find_one({"_id": ObjectId(raw_id), "active": {"$ne": False}})
+            except Exception:
+                product = None
+            if not product:
+                await q.answer("Product not found.", show_alert=True)
+                return
+            await q.edit_message_text(
+                f"🛍️ {product.get('name', 'Unnamed Product')}\n\n"
+                "Product added successfully.\n\n"
+                "Product options/details will be added in the next step.",
+                reply_markup=admin_products_menu()
+            )
+            return
+        elif action == "admin_stats":
+            total_users = users.count_documents({})
+            total_deposits = deposits.count_documents({"status": "approved"})
+            total_orders = orders.count_documents({})
+            pending = deposits.count_documents({"status": "pending"})
+            sales = list(orders.aggregate([{"$match": {"status": "completed"}}, {"$group": {"_id": None, "total": {"$sum": {"$ifNull": ["$amount", 0]}}}}]))
+            total_sales = sales[0]["total"] if sales else 0
+            await q.edit_message_text(
+                f"📊 STATISTICS\n━━━━━━━━━━━━━━━━━━\n\n"
+                f"Total users: {total_users}\n"
+                f"Approved deposits: {total_deposits}\n"
+                f"Total orders: {total_orders}\n"
+                f"Total sales: ₹{total_sales}\n"
+                f"Pending deposit requests: {pending}",
+                reply_markup=admin_back()
+            )
+        elif action == "admin_broadcast":
+            await q.edit_message_text(
+                "📢 BROADCAST\n━━━━━━━━━━━━━━━━━━\n\n"
+                "Send the broadcast message in your DM as:\n"
+                "BROADCAST: your message here\n\n"
+                "Only the owner can use this command.",
+                reply_markup=admin_back()
+            )
+        elif action == "admin_settings":
+            await q.edit_message_text(
+                "⚙️ SETTINGS\n━━━━━━━━━━━━━━━━━━\n\n"
+                f"UPI ID: {UPI_ID}\n"
+                "Support: @genzportals\n"
+                "Force Join: @zyXzo, @arcfluxx, @genzportals\n\n"
+                "Current settings are controlled through Railway environment variables/code.",
+                reply_markup=admin_back()
+            )
+        return
+
     if q.data == "home":
         await q.edit_message_text(
             f"👋 Welcome, {q.from_user.first_name}!\n\n"
             "🛒 Browse products and manage your wallet from the menu below.",
-            reply_markup=main_menu()
+            reply_markup=main_menu(q.from_user.id)
         )
 
     elif q.data == "add_funds":
@@ -186,9 +347,34 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return AMOUNT
 
     elif q.data == "buy":
+        total = products.count_documents({"active": {"$ne": False}})
+        if total == 0:
+            await q.edit_message_text(
+                "🛒 BUY NOW\n━━━━━━━━━━━━━━━━━━\n\n"
+                "No products are available right now.",
+                reply_markup=back_home()
+            )
+        else:
+            await q.edit_message_text(
+                "🛒 BUY NOW\n━━━━━━━━━━━━━━━━━━\n\n"
+                "Select a product:",
+                reply_markup=user_products_menu()
+            )
+
+    elif q.data.startswith("buy_product:"):
+        from bson import ObjectId
+        raw_id = q.data.split(":", 1)[1]
+        try:
+            product = products.find_one({"_id": ObjectId(raw_id), "active": {"$ne": False}})
+        except Exception:
+            product = None
+        if not product:
+            await q.answer("Product not found.", show_alert=True)
+            return
         await q.edit_message_text(
-            "🛒 BUY NOW\n\nProduct/inventory interface will be added next.",
-            reply_markup=back_home()
+            f"🛍️ {product.get('name', 'Unnamed Product')}\n\n"
+            "Product details and purchase options will be added next.",
+            reply_markup=user_products_menu()
         )
 
     elif q.data == "orders":
@@ -210,6 +396,39 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=back_home()
         )
 
+    return ConversationHandler.END
+
+async def product_name_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        return ConversationHandler.END
+
+    name = (update.message.text or "").strip()
+    if not name:
+        await update.message.reply_text("❌ Please send a valid product name.")
+        return PRODUCT_NAME
+
+    existing = products.find_one({"name": name, "active": {"$ne": False}})
+    if existing:
+        await update.message.reply_text(
+            "❌ A product with this name already exists.\n\n"
+            "Please send a different product name."
+        )
+        return PRODUCT_NAME
+
+    products.insert_one({
+        "name": name,
+        "active": True,
+        "created_at": now(),
+        "updated_at": now(),
+    })
+
+    await update.message.reply_text(
+        f"✅ Product button added successfully.\n\n"
+        f"🛍️ Product: {name}\n\n"
+        "The product is now available automatically in Admin Panel → Products / Accounts "
+        "and in users' Buy Now menu."
+    )
+    context.user_data.pop("product_name", None)
     return ConversationHandler.END
 
 async def amount_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -411,6 +630,22 @@ async def admin_balance_command(update: Update, context: ContextTypes.DEFAULT_TY
     if not update.effective_user or update.effective_user.id != OWNER_ID:
         return
 
+    raw_text = (update.message.text or "").strip()
+    if raw_text.upper().startswith("BROADCAST:"):
+        message = raw_text.split(":", 1)[1].strip()
+        if not message:
+            await update.message.reply_text("❌ Broadcast message is empty.")
+            return
+        sent = failed = 0
+        for u in users.find({}, {"user_id": 1, "_id": 0}):
+            try:
+                await context.bot.send_message(u["user_id"], message)
+                sent += 1
+            except Exception:
+                failed += 1
+        await update.message.reply_text(f"📢 Broadcast complete.\n\nSent: {sent}\nFailed: {failed}")
+        return
+
     parsed = parse_admin_balance_command(update.message.text)
     if not parsed:
         return
@@ -502,7 +737,7 @@ def main():
 
     conv = ConversationHandler(
         entry_points=[
-            CallbackQueryHandler(callbacks, pattern=r"^(pay_upi|pay_redeem)$"),
+            CallbackQueryHandler(callbacks, pattern=r"^(pay_upi|pay_redeem|admin_add_product)$"),
         ],
         states={
             AMOUNT: [
@@ -517,6 +752,9 @@ def main():
             ],
             REDEEM_SCREENSHOT: [
                 MessageHandler(filters.PHOTO, proof_received),
+            ],
+            PRODUCT_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, product_name_received),
             ],
         },
         fallbacks=[CallbackQueryHandler(callbacks)],
