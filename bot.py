@@ -762,13 +762,17 @@ def main():
     )
 
     app.add_handler(CommandHandler("start", start))
+    # Conversation handlers must run before the catch-all owner balance
+    # text handler, otherwise product names / deposit inputs get consumed
+    # before their active conversation can receive them.
+    app.add_handler(conv, group=0)
+
     # Owner-only manual balance controls.
     # DM: Dd 70 USER_ID / Ss 70 USER_ID
     # Support group reply: Dd 68 / Ss 68
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_balance_command), group=0)
-    app.add_handler(conv, group=1)
-    app.add_handler(CallbackQueryHandler(admin_decision, pattern=r"^(approve|reject):"))
-    app.add_handler(CallbackQueryHandler(callbacks))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_balance_command), group=1)
+    app.add_handler(CallbackQueryHandler(admin_decision, pattern=r"^(approve|reject):"), group=1)
+    app.add_handler(CallbackQueryHandler(callbacks), group=2)
 
     logger.info("Bot started")
     app.run_polling()
