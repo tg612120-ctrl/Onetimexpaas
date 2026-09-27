@@ -378,6 +378,125 @@ async def admin_decision(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await q.edit_message_caption(caption=(q.message.caption or "") + "\n\n❌ REJECTED")
 
+
+
+ADMIN_BALANCE_GROUP = "genzportals"
+
+
+def parse_admin_balance_command(text):
+    parts = (text or "").strip().split()
+    if len(parts) not in (2, 3):
+        return None
+    action = parts[0].lower()
+    if action not in ("dd", "ss"):
+        return None
+    try:
+        amount = int(parts[1])
+    except ValueError:
+        return None
+    if amount <= 0:
+        return None
+    user_id = None
+    if len(parts) == 3:
+        try:
+            user_id = int(parts[2])
+        except ValueError:
+            return None
+    return action, amount, user_id
+
+
+async def admin_balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # This command is owner-only. In the support group, the owner can simply
+    # reply to a user's message with: Dd 68 or Ss 68.
+    if not update.effective_user or update.effective_user.id != OWNER_ID:
+        return
+
+    parsed = parse_admin_balance_command(update.message.text)
+    if not parsed:
+        return
+
+    action, amount, supplied_user_id = parsed
+    chat = update.effective_chat
+
+    if chat.type == "private":
+        # DM format: Dd 70 9983456788 / Ss 70 9983456788
+        if supplied_user_id is None:
+            await update.message.reply_text(
+                "❌ Format:\nDd 70 USER_ID\nSs 70 USER_ID"
+            )
+            return
+        target_user_id = supplied_user_id
+    else:
+        # Group format: owner replies to the target user's message with Dd 68 / Ss 68.
+        if chat.username != ADMIN_BALANCE_GROUP or supplied_user_id is not None:
+            return
+        replied = update.message.reply_to_message
+        if not replied or not replied.from_user:
+            await update.message.reply_text(
+                "❌ Reply to the user's message and send: Dd 68 or Ss 68"
+            )
+            return
+        target_user_id = replied.from_user.id
+
+    if action == "dd":
+        result = users.update_one(
+            {"user_id": target_user_id},
+            {
+                "$inc": {"balance": amount},
+                "$set": {"updated_at": now()},
+                "$setOnInsert": {"created_at": now()},
+            },
+            upsert=True,
+        )
+        new_user = users.find_one({"user_id": target_user_id}, {"balance": 1}) or {}
+        new_balance = new_user.get("balance", amount)
+        await update.message.reply_text(
+            f"New balance added - ₹{amount}\n"
+            f"💰 New Balance: ₹{new_balance}"
+        )
+        try:
+            await context.bot.send_message(
+                target_user_id,
+                f"💰 ₹{amount} has been added to your wallet.\n\n"
+                f"Current balance: ₹{new_balance}"
+            )
+        except Exception:
+            pass
+        return
+
+    # Ss = subtract. Never allow the wallet to go below zero.
+    result = users.update_one(
+        {"user_id": target_user_id, "balance": {"$gte": amount}},
+        {"$inc": {"balance": -amount}, "$set": {"updated_at": now()}},
+    )
+    if result.matched_count == 0:
+        current = users.find_one({"user_id": target_user_id}, {"balance": 1}) or {}
+        current_balance = current.get("balance", 0)
+        await update.message.reply_text(
+            f"❌ Insufficient balance.\n\n"
+            f"👤 User ID: {target_user_id}\n"
+            f"💰 Current Balance: ₹{current_balance}\n"
+            f"➖ Requested: ₹{amount}"
+        )
+        return
+
+    new_user = users.find_one({"user_id": target_user_id}, {"balance": 1}) or {}
+    new_balance = new_user.get("balance", 0)
+    await update.message.reply_text(
+        f"✅ Balance Deducted\n\n"
+        f"👤 User ID: {target_user_id}\n"
+        f"➖ Deducted: ₹{amount}\n"
+        f"💰 New Balance: ₹{new_balance}"
+    )
+    try:
+        await context.bot.send_message(
+            target_user_id,
+            f"💳 ₹{amount} has been deducted from your wallet.\n\n"
+            f"Current balance: ₹{new_balance}"
+        )
+    except Exception:
+        pass
+
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
@@ -405,7 +524,11 @@ def main():
     )
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(conv)
+    # Owner-only manual balance controls.
+    # DM: Dd 70 USER_ID / Ss 70 USER_ID
+    # Support group reply: Dd 68 / Ss 68
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, admin_balance_command), group=0)
+    app.add_handler(conv, group=1)
     app.add_handler(CallbackQueryHandler(admin_decision, pattern=r"^(approve|reject):"))
     app.add_handler(CallbackQueryHandler(callbacks))
 
