@@ -9,6 +9,11 @@ from telegram.ext import (
 )
 from pymongo import MongoClient
 
+try:
+    from cryptography.fernet import Fernet
+except ImportError:
+    Fernet = None
+
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 MONGO_URI = os.environ["MONGO_URI"]
 DATABASE_NAME = os.getenv("DATABASE_NAME", "selling_bot")
@@ -26,6 +31,53 @@ users = db.users
 deposits = db.deposits
 orders = db.orders
 products = db.products
+product_sessions = db.product_sessions
+
+# Session vault: authentication material is never sent back to users or logged.
+# Set SESSION_ENCRYPTION_KEY in Railway to a Fernet key. Keep it private; losing it
+# makes encrypted session records unrecoverable. This bot does not implement
+# Telegram user-account login or DM monitoring.
+SESSION_ENCRYPTION_KEY = os.getenv("SESSION_ENCRYPTION_KEY")
+
+def encrypt_session_value(session_value: str) -> str:
+    if Fernet is None:
+        raise RuntimeError("cryptography is required for encrypted session storage")
+    if not SESSION_ENCRYPTION_KEY:
+        raise RuntimeError("SESSION_ENCRYPTION_KEY is not configured")
+    return Fernet(SESSION_ENCRYPTION_KEY.encode()).encrypt(session_value.encode()).decode()
+
+def decrypt_session_value(encrypted_value: str) -> str:
+    if Fernet is None:
+        raise RuntimeError("cryptography is required for encrypted session storage")
+    if not SESSION_ENCRYPTION_KEY:
+        raise RuntimeError("SESSION_ENCRYPTION_KEY is not configured")
+    return Fernet(SESSION_ENCRYPTION_KEY.encode()).decrypt(encrypted_value.encode()).decode()
+
+def store_product_session_reference(product_id, watcher_user_id: int, session_value: str):
+    """Store an encrypted, owner-controlled session credential for a product.
+
+    This is a storage primitive only; no Telegram user-account login/monitoring
+    is performed by this bot.
+    """
+    encrypted = encrypt_session_value(session_value)
+    product_sessions.update_one(
+        {"product_id": str(product_id)},
+        {"$set": {
+            "product_id": str(product_id),
+            "watcher_user_id": int(watcher_user_id),
+            "session_encrypted": encrypted,
+            "updated_at": now(),
+        }, "$setOnInsert": {"created_at": now()}},
+        upsert=True,
+    )
+
+def get_product_session_reference(product_id):
+    """Return only non-secret metadata; never return the decrypted session to UI/logs."""
+    doc = product_sessions.find_one(
+        {"product_id": str(product_id)},
+        {"_id": 0, "watcher_user_id": 1, "created_at": 1, "updated_at": 1},
+    )
+    return doc
 
 AMOUNT, UPI_PROOF, REDEEM_PROOF, REDEEM_SCREENSHOT, PRODUCT_NAME = range(5)
 
