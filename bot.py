@@ -328,10 +328,56 @@ async def callbacks(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not product:
                 await q.answer("Product not found.", show_alert=True)
                 return
+            product_id = str(product["_id"])
             await q.edit_message_text(
                 f"🛍️ {product.get('name', 'Unnamed Product')}\n\n"
                 "Product added successfully.\n\n"
-                "Product options/details will be added in the next step.",
+                "Select an option below:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🗑️ Delete Product", callback_data=f"admin_delete_product:{product_id}")],
+                    [InlineKeyboardButton("⬅️ Products / Accounts", callback_data="admin_products")],
+                ])
+            )
+            return
+        elif action.startswith("admin_delete_product:"):
+            from bson import ObjectId
+            raw_id = action.split(":", 1)[1]
+            try:
+                product = products.find_one({"_id": ObjectId(raw_id), "active": {"$ne": False}})
+            except Exception:
+                product = None
+            if not product:
+                await q.answer("Product not found or already deleted.", show_alert=True)
+                return
+            product_id = str(product["_id"])
+            await q.edit_message_text(
+                f"⚠️ DELETE PRODUCT\n━━━━━━━━━━━━━━━━━━\n\n"
+                f"Are you sure you want to delete:\n\n🛍️ {product.get('name', 'Unnamed Product')}\n\n"
+                "This will remove it from the product lists.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ YES, DELETE", callback_data=f"admin_delete_confirm:{product_id}")],
+                    [InlineKeyboardButton("❌ Cancel", callback_data=f"admin_product:{product_id}")],
+                ])
+            )
+            return
+        elif action.startswith("admin_delete_confirm:"):
+            from bson import ObjectId
+            raw_id = action.split(":", 1)[1]
+            try:
+                oid = ObjectId(raw_id)
+            except Exception:
+                await q.answer("Invalid product.", show_alert=True)
+                return
+            product = products.find_one({"_id": oid, "active": {"$ne": False}})
+            if not product:
+                await q.answer("Product not found or already deleted.", show_alert=True)
+                return
+            products.update_one(
+                {"_id": oid},
+                {"$set": {"active": False, "deleted_at": now(), "updated_at": now()}}
+            )
+            await q.edit_message_text(
+                f"✅ Product deleted successfully.\n\n🛍️ {product.get('name', 'Unnamed Product')}",
                 reply_markup=admin_products_menu()
             )
             return
