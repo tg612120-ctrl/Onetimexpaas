@@ -25,6 +25,12 @@ class AddItemState(StatesGroup):
 class AddCategoryState(StatesGroup):
     waiting_for_name = State()
 
+# Phone Number Masking Function for Channel Log
+def mask_phone_number(phone: str) -> str:
+    if len(phone) > 8:
+        return phone[:7] + "****" + phone[-2:]
+    return phone
+
 async def check_user_channels(user_id: int) -> bool:
     for channel in REQUIRED_CHANNELS:
         try:
@@ -154,7 +160,6 @@ async def show_category_items(callback: types.CallbackQuery):
                                          reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="shop")]]))
         return
     
-    # Yahan phone number ki jagah custom display_name dikhega
     kb = [[InlineKeyboardButton(text=f"{display_name}", callback_data=f"select_acc_{acc_id}")] for acc_id, display_name, price in accounts]
     kb.append([InlineKeyboardButton(text="🔙 Back", callback_data="shop")])
     
@@ -190,17 +195,49 @@ async def show_purchase_confirmation(callback: types.CallbackQuery):
     ]
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
 
-# Purchase Complete & Show Details + Get Code Button
+# Purchase Complete, Channel Broadcast & Show Details
 @dp.callback_query(F.data.startswith("do_buy_"))
 async def process_purchase(callback: types.CallbackQuery):
     acc_id = int(callback.data.split("_")[2])
     user_id = callback.from_user.id
     
+    account = await db.get_account_by_id(acc_id)
+    if not account:
+        await callback.answer("❌ Yeh account ab available nahi hai.", show_alert=True)
+        return
+
     status, phone, session, price, two_step = await db.buy_account_safely(user_id, acc_id)
     
     if status == "success":
         asyncio.create_task(start_userbot_for_account(phone, session, bot, user_id))
         
+        # Channel log broadcast
+        masked_phone = mask_phone_number(phone)
+        bot_user = await bot.get_me()
+        bot_username = bot_user.username
+        
+        categories = await db.get_categories()
+        cat_name = "Telegram"
+        for c_id, c_name in categories:
+            if c_id == account.get('category_id'):
+                cat_name = c_name
+                break
+
+        channel_text = (
+            f"💬 **Login Account Purchased**\n\n"
+            f"- Category: {cat_name}\n"
+            f"🔹 Number: `{masked_phone}` 📱\n"
+            f"🔹 Status: Purchased & Delivered ✅\n\n"
+            f"• @{bot_username}"
+        )
+        
+        LOG_CHANNEL = "@zyXzo"
+        try:
+            await bot.send_message(chat_id=LOG_CHANNEL, text=channel_text, parse_mode="Markdown")
+        except Exception as e:
+            print(f"Channel log error: {e}")
+
+        # User details screen
         text = (
             f"✅ **Purchase Successful!**\n\n"
             f"📱 **Number:** `{phone}`\n"
@@ -214,6 +251,7 @@ async def process_purchase(callback: types.CallbackQuery):
             [InlineKeyboardButton(text="🏠 Main Menu", callback_data="back_home")]
         ]
         await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+        
     elif status == "low_balance":
         await callback.answer("❌ Insufficient balance! Wallet me balance add karein.", show_alert=True)
     else:
@@ -417,4 +455,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-        
+    
