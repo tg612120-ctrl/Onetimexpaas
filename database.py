@@ -37,7 +37,16 @@ async def get_user(user_id: int):
     try:
         return await users_col.find_one_and_update(
             {"user_id": user_id},
-            {"$setOnInsert": {"balance": 0.0, "is_verified": 0, "is_banned": 0, "referred_by": None, "referral_count": 0}},
+            {
+                "$setOnInsert": {
+                    "balance": 0.0,
+                    "is_verified": 0,
+                    "is_banned": 0,
+                    "referred_by": None,
+                    "referral_count": 0,
+                    "referral_rewarded": 0,
+                }
+            },
             upsert=True,
             return_document=ReturnDocument.AFTER,
         )
@@ -134,8 +143,6 @@ async def get_all_user_ids():
     return [doc["user_id"] for doc in users]
 
 
-# ================= PHASE 2: NEW FUNCTIONS =================
-
 async def add_promo_code(code: str, discount_amount: float):
     await promo_col.update_one(
         {"code": code},
@@ -149,7 +156,6 @@ async def use_promo_code(user_id: int, code: str):
     if not promo:
         return False, "Invalid promo code."
     
-    # Check if user already used this code (optional tracking)
     user = await users_col.find_one({"user_id": user_id})
     used_codes = user.get("used_promo_codes", [])
     if code in used_codes:
@@ -160,11 +166,10 @@ async def use_promo_code(user_id: int, code: str):
         {"user_id": user_id},
         {"$inc": {"balance": discount}, "$push": {"used_promo_codes": code}}
     )
-    return True, f"Successfully redeemed! ${discount} added to your balance."
+    return True, f"Successfully redeemed! ₹{discount} added to your balance."
 
 
 async def set_supplier_config(api_url: str, api_key: str, is_active: bool):
-    """Supplier API modular configuration placeholder"""
     await supplier_col.update_one(
         {"_id": "config"},
         {"$set": {"api_url": api_url, "api_key": api_key, "is_active": is_active}},
@@ -177,8 +182,6 @@ async def get_supplier_config():
     if not config:
         return {"api_url": "", "api_key": "", "is_active": False}
     return config
-
-# ==========================================================
 
 
 async def add_category(name: str):
@@ -237,7 +240,7 @@ async def buy_account_safely(user_id: int, account_id: int):
         await users_col.update_one({"user_id": user_id}, {"$inc": {"balance": price}})
         return "not_found", None, None, None, None
 
-    await save_payment_record(user_id, price, "USD", "SPEND_BUY_ACCOUNT")
+    await save_payment_record(user_id, price, "INR", "SPEND_BUY_ACCOUNT")
     return "success", claimed["phone_number"], claimed["session_string"], claimed["price"], claimed.get("two_step", "")
 
 
