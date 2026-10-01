@@ -12,7 +12,7 @@ UPI_ID = os.getenv("UPI_ID", "Not Set")
 CRYPTO_ADDRESS = os.getenv("CRYPTO_ADDRESS", "Not Set")
 
 # Yahan apne 3 required channels ke usernames daalein
-REQUIRED_CHANNELS = ["@channel1", "@channel2", "@channel3"]
+REQUIRED_CHANNELS = ["@genzportals", "@zyXzo", "@arcfluxx"]
 
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN is missing!")
