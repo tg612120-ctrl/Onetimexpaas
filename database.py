@@ -34,7 +34,7 @@ async def get_user(user_id: int):
     try:
         return await users_col.find_one_and_update(
             {"user_id": user_id},
-            {"$setOnInsert": {"balance": 0.0, "is_verified": 0}},
+            {"$setOnInsert": {"balance": 0.0, "is_verified": 0, "is_banned": 0}},
             upsert=True,
             return_document=ReturnDocument.AFTER,
         )
@@ -76,6 +76,65 @@ async def get_user_payments(user_id: int):
 async def get_categories():
     cursor = categories_col.find({})
     return [(doc["category_id"], doc["name"]) async for doc in cursor]
+
+
+# ================= PHASE 1: NEW DATABASE FUNCTIONS =================
+
+async def get_categories_with_counts():
+    """Categories ke sath available accounts ka real-time count laane ke liye"""
+    cursor = categories_col.find({})
+    categories = await cursor.to_list(length=None)
+    result = []
+    for cat in categories:
+        cat_id = cat["category_id"]
+        cat_name = cat["name"]
+        available_count = await accounts_col.count_documents({"category_id": cat_id, "is_sold": 0})
+        result.append((cat_id, cat_name, available_count))
+    return result
+
+
+async def update_category_name(cat_id: int, new_name: str):
+    """Category ka naam edit/rename karne ke liye"""
+    await categories_col.update_one(
+        {"category_id": cat_id},
+        {"$set": {"name": new_name}}
+    )
+
+
+async def set_user_ban_status(user_id: int, status: int):
+    """User ko ban ya unban karne ke liye (status: 1 for ban, 0 for unban)"""
+    await users_col.update_one(
+        {"user_id": user_id},
+        {"$set": {"is_banned": status}},
+        upsert=True
+    )
+
+
+async def get_detailed_stock_stats():
+    """Real-time stock status aur total users count ke liye"""
+    available_accounts = await accounts_col.count_documents({"is_sold": 0})
+    sold_accounts = await accounts_col.count_documents({"is_sold": 1})
+    total_users = await users_col.count_documents({})
+    return {
+        "available": available_accounts,
+        "sold": sold_accounts,
+        "users": total_users
+    }
+
+
+async def get_all_sales_history(limit: int = 10):
+    """Recent sales ya purchase logs dekhne ke liye"""
+    cursor = payments_col.find({"status": "SPEND_BUY_ACCOUNT"}).sort("timestamp", -1).limit(limit)
+    return await cursor.to_list(length=limit)
+
+
+async def get_all_user_ids():
+    """Broadcast ke liye sabhi users ki ID nikalne ke liye"""
+    cursor = users_col.find({}, {"user_id": 1})
+    users = await cursor.to_list(length=None)
+    return [doc["user_id"] for doc in users]
+
+# ===================================================================
 
 
 async def add_category(name: str):
@@ -145,4 +204,4 @@ async def get_all_unsold_accounts():
 
 async def delete_account(acc_id: int):
     await accounts_col.delete_one({"account_id": acc_id})
-    
+            
