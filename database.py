@@ -30,7 +30,6 @@ async def init_db():
     await users_col.create_index("user_id", unique=True)
 
 
-# User / Wallet & Verification functions
 async def get_user(user_id: int):
     try:
         return await users_col.find_one_and_update(
@@ -59,7 +58,6 @@ async def update_balance(user_id: int, amount: float):
     )
 
 
-# Payment History functions
 async def save_payment_record(user_id: int, amount: float, currency: str, status: str):
     await payments_col.insert_one({
         "user_id": user_id,
@@ -75,7 +73,6 @@ async def get_user_payments(user_id: int):
     return await cursor.to_list(length=50)
 
 
-# Categories & Accounts functions
 async def get_categories():
     cursor = categories_col.find({})
     return [(doc["category_id"], doc["name"]) async for doc in cursor]
@@ -91,11 +88,12 @@ async def add_category(name: str):
             pass
 
 
-async def add_account(category_id: int, phone_number: str, session_string: str, price: float, two_step: str = ""):
+async def add_account(category_id: int, display_name: str, phone_number: str, session_string: str, price: float, two_step: str = ""):
     acc_id = await get_next_sequence("account_id")
     await accounts_col.insert_one({
         "account_id": acc_id,
         "category_id": category_id,
+        "display_name": display_name,
         "phone_number": phone_number,
         "session_string": session_string,
         "price": price,
@@ -106,41 +104,11 @@ async def add_account(category_id: int, phone_number: str, session_string: str, 
 
 async def get_available_accounts(category_id: int):
     cursor = accounts_col.find({"category_id": category_id, "is_sold": 0})
-    return [(doc["account_id"], doc["phone_number"], doc["price"]) async for doc in cursor]
+    return [(doc["account_id"], doc.get("display_name", doc["phone_number"]), doc["price"]) async for doc in cursor]
 
 
 async def get_account_by_id(account_id: int):
     return await accounts_col.find_one({"account_id": account_id})
-
-
-async def buy_account(user_id: int, account_id: int):
-    await get_user(user_id)
-
-    account = await accounts_col.find_one({"account_id": account_id, "is_sold": 0})
-    if not account:
-        return "not_found", None, None
-
-    price = account["price"]
-
-    deducted = await users_col.update_one(
-        {"user_id": user_id, "balance": {"$gte": price}},
-        {"$inc": {"balance": -price}},
-    )
-    if deducted.modified_count == 0:
-        return "low_balance", None, None
-
-    claimed = await accounts_col.find_one_and_update(
-        {"account_id": account_id, "is_sold": 0},
-        {"$set": {"is_sold": 1}},
-        return_document=ReturnDocument.AFTER,
-    )
-    if not claimed:
-        await users_col.update_one({"user_id": user_id}, {"$inc": {"balance": price}})
-        return "not_found", None, None
-
-    await save_payment_record(user_id, price, "USD", "SPEND_BUY_ACCOUNT")
-
-    return "success", claimed["phone_number"], claimed["session_string"]
 
 
 async def buy_account_safely(user_id: int, account_id: int):
@@ -172,7 +140,7 @@ async def buy_account_safely(user_id: int, account_id: int):
 
 async def get_all_unsold_accounts():
     cursor = accounts_col.find({"is_sold": 0})
-    return [(doc["account_id"], doc["phone_number"], doc["price"]) async for doc in cursor]
+    return [(doc["account_id"], doc.get("display_name", doc["phone_number"]), doc["price"]) async for doc in cursor]
 
 
 async def delete_account(acc_id: int):
