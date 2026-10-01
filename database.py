@@ -12,6 +12,8 @@ accounts_col = db["accounts"]
 users_col = db["users"]
 payments_col = db["payments"]
 counters_col = db["counters"]
+promo_col = db["promo_codes"]
+supplier_col = db["supplier_config"]
 
 
 async def get_next_sequence(name: str) -> int:
@@ -28,13 +30,14 @@ async def init_db():
     await categories_col.create_index("name", unique=True)
     await accounts_col.create_index("account_id", unique=True)
     await users_col.create_index("user_id", unique=True)
+    await promo_col.create_index("code", unique=True)
 
 
 async def get_user(user_id: int):
     try:
         return await users_col.find_one_and_update(
             {"user_id": user_id},
-            {"$setOnInsert": {"balance": 0.0, "is_verified": 0, "is_banned": 0}},
+            {"$setOnInsert": {"balance": 0.0, "is_verified": 0, "is_banned": 0, "referred_by": None, "referral_count": 0}},
             upsert=True,
             return_document=ReturnDocument.AFTER,
         )
@@ -78,10 +81,7 @@ async def get_categories():
     return [(doc["category_id"], doc["name"]) async for doc in cursor]
 
 
-# ================= PHASE 1: NEW DATABASE FUNCTIONS =================
-
 async def get_categories_with_counts():
-    """Categories ke sath available accounts ka real-time count laane ke liye"""
     cursor = categories_col.find({})
     categories = await cursor.to_list(length=None)
     result = []
@@ -94,7 +94,6 @@ async def get_categories_with_counts():
 
 
 async def update_category_name(cat_id: int, new_name: str):
-    """Category ka naam edit/rename karne ke liye"""
     await categories_col.update_one(
         {"category_id": cat_id},
         {"$set": {"name": new_name}}
@@ -102,7 +101,6 @@ async def update_category_name(cat_id: int, new_name: str):
 
 
 async def set_user_ban_status(user_id: int, status: int):
-    """User ko ban ya unban karne ke liye (status: 1 for ban, 0 for unban)"""
     await users_col.update_one(
         {"user_id": user_id},
         {"$set": {"is_banned": status}},
@@ -111,30 +109,76 @@ async def set_user_ban_status(user_id: int, status: int):
 
 
 async def get_detailed_stock_stats():
-    """Real-time stock status aur total users count ke liye"""
     available_accounts = await accounts_col.count_documents({"is_sold": 0})
     sold_accounts = await accounts_col.count_documents({"is_sold": 1})
     total_users = await users_col.count_documents({})
+    total_revenue = 0
+    async for p in payments_col.find({"status": "SPEND_BUY_ACCOUNT"}):
+        total_revenue += p.get("amount", 0)
     return {
         "available": available_accounts,
         "sold": sold_accounts,
-        "users": total_users
+        "users": total_users,
+        "revenue": total_revenue
     }
 
 
 async def get_all_sales_history(limit: int = 10):
-    """Recent sales ya purchase logs dekhne ke liye"""
     cursor = payments_col.find({"status": "SPEND_BUY_ACCOUNT"}).sort("timestamp", -1).limit(limit)
     return await cursor.to_list(length=limit)
 
 
 async def get_all_user_ids():
-    """Broadcast ke liye sabhi users ki ID nikalne ke liye"""
     cursor = users_col.find({}, {"user_id": 1})
     users = await cursor.to_list(length=None)
     return [doc["user_id"] for doc in users]
 
-# ===================================================================
+
+# ================= PHASE 2: NEW FUNCTIONS =================
+
+async def add_promo_code(code: str, discount_amount: float):
+    await promo_col.update_one(
+        {"code": code},
+        {"$set": {"discount": discount_amount}},
+        upsert=True
+    )
+
+
+async def use_promo_code(user_id: int, code: str):
+    promo = await promo_col.find_one({"code": code})
+    if not promo:
+        return False, "Invalid promo code."
+    
+    # Check if user already used this code (optional tracking)
+    user = await users_col.find_one({"user_id": user_id})
+    used_codes = user.get("used_promo_codes", [])
+    if code in used_codes:
+        return False, "You have already used this promo code."
+    
+    discount = promo["discount"]
+    await users_col.update_one(
+        {"user_id": user_id},
+        {"$inc": {"balance": discount}, "$push": {"used_promo_codes": code}}
+    )
+    return True, f"Successfully redeemed! ${discount} added to your balance."
+
+
+async def set_supplier_config(api_url: str, api_key: str, is_active: bool):
+    """Supplier API modular configuration placeholder"""
+    await supplier_col.update_one(
+        {"_id": "config"},
+        {"$set": {"api_url": api_url, "api_key": api_key, "is_active": is_active}},
+        upsert=True
+    )
+
+
+async def get_supplier_config():
+    config = await supplier_col.find_one({"_id": "config"})
+    if not config:
+        return {"api_url": "", "api_key": "", "is_active": False}
+    return config
+
+# ==========================================================
 
 
 async def add_category(name: str):
@@ -204,4 +248,3 @@ async def get_all_unsold_accounts():
 
 async def delete_account(acc_id: int):
     await accounts_col.delete_one({"account_id": acc_id})
-            
