@@ -7,7 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from config import BOT_TOKEN, ADMIN_ID, REQUIRED_CHANNELS, UPI_ID, CRYPTO_ADDRESS
+from config import BOT_TOKEN, OWNER_ID, REQUIRED_CHANNELS, UPI_ID, CRYPTO_ADDRESS
 import database as db
 from userbot import start_userbot_for_account
 
@@ -24,7 +24,6 @@ class AddItemState(StatesGroup):
 class AddCategoryState(StatesGroup):
     waiting_for_name = State()
 
-# Force Join check function
 async def check_user_channels(user_id: int) -> bool:
     for channel in REQUIRED_CHANNELS:
         try:
@@ -35,13 +34,22 @@ async def check_user_channels(user_id: int) -> bool:
             return False
     return True
 
-async def send_main_menu(message_or_callback, text="👋 Welcome to Telegram OTP Bot!\n\nChoose an option below:"):
+async def send_main_menu(message_or_callback, text="🛒 Products dekhne aur wallet manage karne ke liye menu explore karein."):
     kb = [
-        [InlineKeyboardButton(text="🛒 Buy Accounts & Get OTP", callback_data="shop")],
-        [InlineKeyboardButton(text="💰 My Wallet & History", callback_data="wallet")],
+        [
+            InlineKeyboardButton(text="🛒 Buy Now", callback_data="shop"),
+            InlineKeyboardButton(text="💳 Add Funds", callback_data="wallet")
+        ],
+        [
+            InlineKeyboardButton(text="📦 My Orders", callback_data="my_orders")
+        ],
+        [
+            InlineKeyboardButton(text="🆘 Support", callback_data="support"),
+            InlineKeyboardButton(text="👤 My Profile", callback_data="my_profile")
+        ]
     ]
     user_id = message_or_callback.from_user.id
-    if user_id == ADMIN_ID:
+    if user_id == OWNER_ID:
         kb.append([InlineKeyboardButton(text="⚙️ Admin Panel", callback_data="admin_panel")])
     
     markup = InlineKeyboardMarkup(inline_keyboard=kb)
@@ -55,25 +63,21 @@ async def cmd_start(message: types.Message):
     user_id = message.from_user.id
     user_data = await db.get_user(user_id)
     
-    # Check if verified in database
     if user_data["is_verified"] == 1:
-        # Double check via Telegram API if they are still in the channels
         still_member = await check_user_channels(user_id)
         if still_member:
-            await send_main_menu(message, f"Welcome back, {message.from_user.first_name}! Aap already verified hain.")
+            await send_main_menu(message, f"Welcome back, {message.from_user.first_name}!\n\n🛒 Products dekhne aur wallet manage karne ke liye menu explore karein.")
             return
         else:
-            # If they left any channel, reset verification status
             await db.update_verification(user_id, 0)
 
-    # Force Join markup creation
     kb = []
     for idx, ch in enumerate(REQUIRED_CHANNELS, start=1):
         kb.append([InlineKeyboardButton(text=f"📢 Join Channel {idx}", url=f"https://t.me/{ch.lstrip('@')}")])
     kb.append([InlineKeyboardButton(text="✅ Verify Membership", callback_data="verify_membership")])
     
     await message.answer(
-        "👋 **Welcome!**\n\nIs bot ko use karne ke liye aapko hamare teeno channels join karne honge. Kripya channels join karke **'Verify Membership'** par click karein:",
+        "👋 **Welcome!**\n\nIs bot ko use karne ke liye aapko hamare channels join karne honge. Kripya channels join karke **'Verify Membership'** par click karein:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
         parse_mode="Markdown"
     )
@@ -86,7 +90,7 @@ async def verify_membership_callback(callback: types.CallbackQuery):
     if joined:
         await db.update_verification(user_id, 1)
         await callback.answer("Verified successfully! ✅", show_alert=True)
-        await send_main_menu(callback, "🎉 **Verification Successful!**\n\nAapne sabhi channels join kar liye hain. Ab aap bot use kar sakte hain:")
+        await send_main_menu(callback, "🎉 **Verification Successful!**\n\n🛒 Products dekhne aur wallet manage karne ke liye menu explore karein.")
     else:
         await callback.answer("❌ Aapne abhi tak saare channels join nahi kiye hain! Kripya join karein.", show_alert=True)
 
@@ -99,7 +103,7 @@ async def show_wallet(callback: types.CallbackQuery):
     if not payments:
         history_text += "No payment history yet."
     else:
-        for p in payments[:5]: # Show last 5 records
+        for p in payments[:5]:
             history_text += f"• {p['amount']} {p['currency']} | Status: `{p['status']}`\n"
 
     kb = [
@@ -165,7 +169,7 @@ async def buy_item(callback: types.CallbackQuery):
             f"✅ **Purchase Successful!**\n\n"
             f"📱 Phone: `{phone}`\n"
             f"🔑 Session String: `{session}`\n\n"
-            f"🤖 *OTP Listener Activated!* 777000 se aane wala OTP yahin aayega.",
+            f"🤖 *OTP Listener Activated!* 777000 se aane wala OTP code ab aapko yahin milega.",
             parse_mode="Markdown"
         )
     elif status == "low_balance":
@@ -173,9 +177,42 @@ async def buy_item(callback: types.CallbackQuery):
     else:
         await callback.answer("❌ Sorry, yeh account sold out ho chuka hai.", show_alert=True)
 
+@dp.callback_query(F.data == "my_orders")
+async def my_orders_handler(callback: types.CallbackQuery):
+    payments = await db.get_user_payments(callback.from_user.id)
+    purchases = [p for p in payments if p['status'] == 'SPEND_BUY_ACCOUNT']
+    
+    text = "📦 **Your Orders History:**\n\n"
+    if not purchases:
+        text += "Aapne abhi tak koi account nahi kharida hai."
+    else:
+        for idx, p in enumerate(purchases, 1):
+            text += f"{idx}. Amount: `${p['amount']}` | Date: `{p['timestamp']}`\n"
+
+    kb = [[InlineKeyboardButton(text="🔙 Back", callback_data="back_home")]]
+    await callback.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@dp.callback_query(F.data == "support")
+async def support_handler(callback: types.CallbackQuery):
+    kb = [[InlineKeyboardButton(text="🔙 Back", callback_data="back_home")]]
+    await callback.message.edit_text("🆘 **Support:**\n\nKisi bhi samasya ya balance add karwane ke liye owner se sampark karein.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@dp.callback_query(F.data == "my_profile")
+async def my_profile_handler(callback: types.CallbackQuery):
+    user = await db.get_user(callback.from_user.id)
+    kb = [[InlineKeyboardButton(text="🔙 Back", callback_data="back_home")]]
+    await callback.message.edit_text(
+        f"👤 **Your Profile**\n\n"
+        f"🆔 User ID: `{callback.from_user.id}`\n"
+        f"💵 Balance: **${user['balance']:.2f}**\n"
+        f"✅ Verified: **{'Yes' if user['is_verified'] == 1 else 'No'}**",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb)
+    )
+
 @dp.callback_query(F.data == "admin_panel")
 async def admin_panel(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
+    if callback.from_user.id != OWNER_ID:
         return
     kb = [
         [InlineKeyboardButton(text="➕ Add Category", callback_data="admin_add_cat")],
@@ -184,13 +221,14 @@ async def admin_panel(callback: types.CallbackQuery):
     ]
     await callback.message.edit_text("⚙️ **Admin Panel**", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
-@dp.message(Command("givebalance"))
+# Updated command from /givebalance to /add
+@dp.message(Command("add"))
 async def give_balance_cmd(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
+    if message.from_user.id != OWNER_ID:
         return
     args = message.text.split()
     if len(args) != 3:
-        await message.answer("Usage: `/givebalance user_id amount`", parse_mode="Markdown")
+        await message.answer("Usage: `/add user_id amount`", parse_mode="Markdown")
         return
     try:
         target_user_id = int(args[1])
@@ -205,7 +243,7 @@ async def give_balance_cmd(message: types.Message):
 @dp.callback_query(F.data == "admin_add_cat")
 async def admin_add_cat(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(AddCategoryState.waiting_for_name)
-    await callback.message.edit_text("✍️️ Send category name:")
+    await callback.message.edit_text("✍ Send category name:")
 
 @dp.message(AddCategoryState.waiting_for_name)
 async def save_cat(message: types.Message, state: FSMContext):
@@ -263,4 +301,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-         
+            
