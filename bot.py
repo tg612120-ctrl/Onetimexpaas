@@ -158,7 +158,7 @@ async def show_category_items(callback: types.CallbackQuery):
     
     await callback.message.edit_text("🛍️ Available Accounts (Click to Buy):", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
-# 1. Step 1: Confirm Purchase Screen Show karega (Direct Buy Nahi Hoga)
+# Confirm Purchase Screen (Direct Buy Nahi Hoga)
 @dp.callback_query(F.data.startswith("select_acc_"))
 async def show_purchase_confirmation(callback: types.CallbackQuery):
     acc_id = int(callback.data.split("_")[2])
@@ -188,7 +188,7 @@ async def show_purchase_confirmation(callback: types.CallbackQuery):
     ]
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
 
-# 2. Step 2: Confirm dabane par Balance Katega aur Details + Get Code Button aayega
+# Confirm dabane par Balance Katega aur Details + Get Code Button aayega
 @dp.callback_query(F.data.startswith("do_buy_"))
 async def process_purchase(callback: types.CallbackQuery):
     acc_id = int(callback.data.split("_")[2])
@@ -218,7 +218,7 @@ async def process_purchase(callback: types.CallbackQuery):
     else:
         await callback.answer("❌ Sorry, yeh account pehle hi bik chuka hai.", show_alert=True)
 
-# 3. Step 3: "Get Code" button dabane par hi OTP deliver hoga
+# "Get Code" button dabane par hi OTP deliver hoga
 @dp.callback_query(F.data.startswith("get_otp_"))
 async def get_otp_handler(callback: types.CallbackQuery):
     acc_id = int(callback.data.split("_")[2])
@@ -232,12 +232,10 @@ async def get_otp_handler(callback: types.CallbackQuery):
     client = active_clients.get(phone)
     
     if not client:
-        # Agar userbot active nahi hai toh dobara start karne ki koshish karein
         asyncio.create_task(start_userbot_for_account(phone, account['session_string'], bot, callback.from_user.id))
         await callback.answer("⏳ Userbot initialize ho raha hai, 5 seconds baad dobara 'Get Code' dabayein.", show_alert=True)
         return
 
-    # Check messages from 777000 or recent messages
     try:
         messages = await client.get_messages(777000, limit=1)
         if messages:
@@ -292,9 +290,40 @@ async def admin_panel(callback: types.CallbackQuery):
     kb = [
         [InlineKeyboardButton(text="➕ Add Category", callback_data="admin_add_cat")],
         [InlineKeyboardButton(text="➕ Add Account", callback_data="admin_add_acc")],
+        [InlineKeyboardButton(text="🗑️ Delete Account", callback_data="admin_del_acc_list")],
         [InlineKeyboardButton(text="🔙 Back", callback_data="back_home")]
     ]
     await callback.message.edit_text("⚙️ **Admin Panel**", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+# Delete Account Handlers for Admin
+@dp.callback_query(F.data == "admin_del_acc_list")
+async def admin_del_acc_list(callback: types.CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
+        return
+    
+    accounts = await db.get_all_unsold_accounts()
+    if not accounts:
+        await callback.message.edit_text(
+            "❌ Delete karne ke liye koi account available nahi hai.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="admin_panel")]])
+        )
+        return
+
+    kb = [[InlineKeyboardButton(text=f"❌ Delete {phone} (${price})", callback_data=f"delacc_{acc_id}")] for acc_id, phone, price in accounts]
+    kb.append([InlineKeyboardButton(text="🔙 Back", callback_data="admin_panel")])
+    
+    await callback.message.edit_text("🗑️ **Delete Account:**\n\nJis account ko delete karna hai us par click karein:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@dp.callback_query(F.data.startswith("delacc_"))
+async def delete_account_action(callback: types.CallbackQuery):
+    if callback.from_user.id != OWNER_ID:
+        return
+    
+    acc_id = int(callback.data.split("_")[1])
+    await db.delete_account(acc_id)
+    
+    await callback.answer("✅ Account successfully delete kar diya gaya hai!", show_alert=True)
+    await admin_del_acc_list(callback)
 
 @dp.message(Command("add"))
 async def give_balance_cmd(message: types.Message):
@@ -361,7 +390,6 @@ async def get_price(message: types.Message, state: FSMContext):
         return
     
     data = await state.get_data()
-    # 2-step password optional rkhne ke liye ya database me handle karne ke liye
     await db.add_account(data["category_id"], data["phone_number"], data["session_string"], price, two_step="")
     await state.clear()
     await message.answer("✅ Account added successfully!")
@@ -376,3 +404,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+    
