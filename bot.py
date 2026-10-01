@@ -17,6 +17,7 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 class AddItemState(StatesGroup):
+    waiting_for_display_name = State()
     waiting_for_phone = State()
     waiting_for_session = State()
     waiting_for_price = State()
@@ -153,12 +154,13 @@ async def show_category_items(callback: types.CallbackQuery):
                                          reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="shop")]]))
         return
     
-    kb = [[InlineKeyboardButton(text=f"📱 {phone} - ${price}", callback_data=f"select_acc_{acc_id}")] for acc_id, phone, price in accounts]
+    # Yahan phone number ki jagah custom display_name dikhega
+    kb = [[InlineKeyboardButton(text=f"{display_name}", callback_data=f"select_acc_{acc_id}")] for acc_id, display_name, price in accounts]
     kb.append([InlineKeyboardButton(text="🔙 Back", callback_data="shop")])
     
     await callback.message.edit_text("🛍️ Available Accounts (Click to Buy):", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
-# Confirm Purchase Screen (Direct Buy Nahi Hoga)
+# Confirm Purchase Screen
 @dp.callback_query(F.data.startswith("select_acc_"))
 async def show_purchase_confirmation(callback: types.CallbackQuery):
     acc_id = int(callback.data.split("_")[2])
@@ -175,7 +177,7 @@ async def show_purchase_confirmation(callback: types.CallbackQuery):
 
     text = (
         f"🛒 **Confirm Purchase**\n\n"
-        f"🌍 Country: 🇮🇳 India\n"
+        f"📦 Item: {account.get('display_name', 'Account')}\n"
         f"💰 Price: `${price:.2f}`\n"
         f"💳 Current balance: `${user_balance:.2f}`\n"
         f"💳 After purchase: `${after_balance:.2f}`\n\n"
@@ -188,7 +190,7 @@ async def show_purchase_confirmation(callback: types.CallbackQuery):
     ]
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
 
-# Confirm dabane par Balance Katega aur Details + Get Code Button aayega
+# Purchase Complete & Show Details + Get Code Button
 @dp.callback_query(F.data.startswith("do_buy_"))
 async def process_purchase(callback: types.CallbackQuery):
     acc_id = int(callback.data.split("_")[2])
@@ -202,7 +204,6 @@ async def process_purchase(callback: types.CallbackQuery):
         text = (
             f"✅ **Purchase Successful!**\n\n"
             f"📱 **Number:** `{phone}`\n"
-            f"🌍 **Country:** India\n"
             f"🔑 **Session String:**\n`{session}`\n\n"
             f"🔐 **2-Step Password:** `{two_step if two_step else 'None'}`\n\n"
             f"👇 OTP lene ke liye neeche diye gaye button par click karein:"
@@ -218,7 +219,7 @@ async def process_purchase(callback: types.CallbackQuery):
     else:
         await callback.answer("❌ Sorry, yeh account pehle hi bik chuka hai.", show_alert=True)
 
-# "Get Code" button dabane par hi OTP deliver hoga
+# "Get Code" button handler
 @dp.callback_query(F.data.startswith("get_otp_"))
 async def get_otp_handler(callback: types.CallbackQuery):
     acc_id = int(callback.data.split("_")[2])
@@ -293,9 +294,8 @@ async def admin_panel(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="🗑️ Delete Account", callback_data="admin_del_acc_list")],
         [InlineKeyboardButton(text="🔙 Back", callback_data="back_home")]
     ]
-    await callback.message.edit_text("⚙️ **Admin Panel**", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    await callback.message.edit_text("⚙️ **Admin Panel**", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
 
-# Delete Account Handlers for Admin
 @dp.callback_query(F.data == "admin_del_acc_list")
 async def admin_del_acc_list(callback: types.CallbackQuery):
     if callback.from_user.id != OWNER_ID:
@@ -309,7 +309,7 @@ async def admin_del_acc_list(callback: types.CallbackQuery):
         )
         return
 
-    kb = [[InlineKeyboardButton(text=f"❌ Delete {phone} (${price})", callback_data=f"delacc_{acc_id}")] for acc_id, phone, price in accounts]
+    kb = [[InlineKeyboardButton(text=f"❌ Delete {disp_name} (${price})", callback_data=f"delacc_{acc_id}")] for acc_id, disp_name, price in accounts]
     kb.append([InlineKeyboardButton(text="🔙 Back", callback_data="admin_panel")])
     
     await callback.message.edit_text("🗑️ **Delete Account:**\n\nJis account ko delete karna hai us par click karein:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
@@ -366,8 +366,14 @@ async def admin_add_acc(callback: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("selcat_"))
 async def sel_cat(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(category_id=int(callback.data.split("_")[1]))
+    await state.set_state(AddItemState.waiting_for_display_name)
+    await callback.message.edit_text("✍️ Send display name for button (e.g., 🇮🇳 India - ₹23):")
+
+@dp.message(AddItemState.waiting_for_display_name)
+async def get_display_name(message: types.Message, state: FSMContext):
+    await state.update_data(display_name=message.text)
     await state.set_state(AddItemState.waiting_for_phone)
-    await callback.message.edit_text("📱 Send phone number (e.g., +91xxxxxxxxxx):")
+    await message.answer("📱 Send phone number (e.g., +91xxxxxxxxxx):")
 
 @dp.message(AddItemState.waiting_for_phone)
 async def get_phone(message: types.Message, state: FSMContext):
@@ -390,9 +396,16 @@ async def get_price(message: types.Message, state: FSMContext):
         return
     
     data = await state.get_data()
-    await db.add_account(data["category_id"], data["phone_number"], data["session_string"], price, two_step="")
+    await db.add_account(
+        data["category_id"], 
+        data["display_name"], 
+        data["phone_number"], 
+        data["session_string"], 
+        price, 
+        two_step=""
+    )
     await state.clear()
-    await message.answer("✅ Account added successfully!")
+    await message.answer("✅ Account added successfully with custom display name!")
 
 @dp.callback_query(F.data == "back_home")
 async def back_home(callback: types.CallbackQuery):
@@ -404,4 +417,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
+        
