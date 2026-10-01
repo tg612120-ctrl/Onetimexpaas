@@ -32,7 +32,6 @@ async def init_db():
 
 # User / Wallet & Verification functions
 async def get_user(user_id: int):
-    # Atomic: user nahi hai to banega, hai to wahi return hoga
     try:
         return await users_col.find_one_and_update(
             {"user_id": user_id},
@@ -41,7 +40,6 @@ async def get_user(user_id: int):
             return_document=ReturnDocument.AFTER,
         )
     except DuplicateKeyError:
-        # Rare race: dusre request ne abhi create kiya, bas fetch kar lo
         return await users_col.find_one({"user_id": user_id})
 
 
@@ -93,7 +91,7 @@ async def add_category(name: str):
             pass
 
 
-async def add_account(category_id: int, phone_number: str, session_string: str, price: float):
+async def add_account(category_id: int, phone_number: str, session_string: str, price: float, two_step: str = ""):
     acc_id = await get_next_sequence("account_id")
     await accounts_col.insert_one({
         "account_id": acc_id,
@@ -101,6 +99,7 @@ async def add_account(category_id: int, phone_number: str, session_string: str, 
         "phone_number": phone_number,
         "session_string": session_string,
         "price": price,
+        "two_step": two_step,
         "is_sold": 0,
     })
 
@@ -110,8 +109,12 @@ async def get_available_accounts(category_id: int):
     return [(doc["account_id"], doc["phone_number"], doc["price"]) async for doc in cursor]
 
 
+async def get_account_by_id(account_id: int):
+    return await accounts_col.find_one({"account_id": account_id})
+
+
 async def buy_account(user_id: int, account_id: int):
-    await get_user(user_id)  # user exist karta hai ensure karo
+    await get_user(user_id)
 
     account = await accounts_col.find_one({"account_id": account_id, "is_sold": 0})
     if not account:
@@ -119,7 +122,6 @@ async def buy_account(user_id: int, account_id: int):
 
     price = account["price"]
 
-    # Step 1: balance atomically deduct (sirf tab jab balance >= price)
     deducted = await users_col.update_one(
         {"user_id": user_id, "balance": {"$gte": price}},
         {"$inc": {"balance": -price}},
@@ -127,17 +129,52 @@ async def buy_account(user_id: int, account_id: int):
     if deducted.modified_count == 0:
         return "low_balance", None, None
 
-    # Step 2: account atomically claim karo (sirf ek buyer jeetega)
     claimed = await accounts_col.find_one_and_update(
         {"account_id": account_id, "is_sold": 0},
         {"$set": {"is_sold": 1}},
         return_document=ReturnDocument.AFTER,
     )
     if not claimed:
-        # Kisi aur ne pehle le liya -> paisa refund
         await users_col.update_one({"user_id": user_id}, {"$inc": {"balance": price}})
         return "not_found", None, None
 
     await save_payment_record(user_id, price, "USD", "SPEND_BUY_ACCOUNT")
 
     return "success", claimed["phone_number"], claimed["session_string"]
+
+
+async def buy_account_safely(user_id: int, account_id: int):
+    await get_user(user_id)
+    account = await accounts_col.find_one({"account_id": account_id, "is_sold": 0})
+    if not account:
+        return "not_found", None, None, None, None
+
+    price = account["price"]
+    deducted = await users_col.update_one(
+        {"user_id": user_id, "balance": {"$gte": price}},
+        {"$inc": {"balance": -price}},
+    )
+    if deducted.modified_count == 0:
+        return "low_balance", None, None, None, None
+
+    claimed = await accounts_col.find_one_and_update(
+        {"account_id": account_id, "is_sold": 0},
+        {"$set": {"is_sold": 1}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not claimed:
+        await users_col.update_one({"user_id": user_id}, {"$inc": {"balance": price}})
+        return "not_found", None, None, None, None
+
+    await save_payment_record(user_id, price, "USD", "SPEND_BUY_ACCOUNT")
+    return "success", claimed["phone_number"], claimed["session_string"], claimed["price"], claimed.get("two_step", "")
+
+
+async def get_all_unsold_accounts():
+    cursor = accounts_col.find({"is_sold": 0})
+    return [(doc["account_id"], doc["phone_number"], doc["price"]) async for doc in cursor]
+
+
+async def delete_account(acc_id: int):
+    await accounts_col.delete_one({"account_id": acc_id})
+    
