@@ -128,7 +128,6 @@ async def send_main_menu(message_or_callback, text="🛒 Welcome to the bot! Exp
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
     
-    # Handle Referral code if passed in start command (e.g. /start ref_123456)
     args = message.text.split()
     if len(args) > 1 and args[1].startswith("ref_"):
         try:
@@ -136,9 +135,10 @@ async def cmd_start(message: types.Message):
             if referrer_id != user_id:
                 user_record = await db.get_user(user_id)
                 if user_record.get("referred_by") is None:
-                    await db.users_col.update_one({"user_id": user_id}, {"$set": {"referred_by": referrer_id}})
-                    await db.users_col.update_one({"user_id": referrer_id}, {"$inc": {"referral_count": 1, "balance": 0.5}}) # $0.5 bonus for referral
-                    await bot.send_message(referrer_id, f"🎉 **Referral Bonus!** User `{user_id}` joined using your link. **$0.50** added to your balance!", parse_mode="Markdown")
+                    await db.users_col.update_one(
+                        {"user_id": user_id}, 
+                        {"$set": {"referred_by": referrer_id, "referral_rewarded": 0}}
+                    )
         except Exception:
             pass
 
@@ -173,6 +173,24 @@ async def verify_membership_callback(callback: types.CallbackQuery):
     
     if joined:
         await db.update_verification(user_id, 1)
+        
+        user_data = await db.get_user(user_id)
+        if user_data.get("referred_by") and user_data.get("referral_rewarded", 0) == 0:
+            referrer_id = user_data["referred_by"]
+            await db.users_col.update_one({"user_id": user_id}, {"$set": {"referral_rewarded": 1}})
+            await db.users_col.update_one(
+                {"user_id": referrer_id}, 
+                {"$inc": {"referral_count": 1, "balance": 0.001}}
+            )
+            try:
+                await bot.send_message(
+                    referrer_id, 
+                    f"🎉 **Referral Bonus!** User `{user_id}` verified their membership using your link. **₹0.001** added to your balance!", 
+                    parse_mode="Markdown"
+                )
+            except Exception:
+                pass
+
         await callback.answer("Verified successfully! ✅", show_alert=True)
         await send_main_menu(callback, "🎉 **Verification Successful!**\n\n🛒 Explore the menu below.")
     else:
@@ -190,7 +208,7 @@ async def show_wallet(event: types.Message | types.CallbackQuery):
         history_text += "No payment history yet."
     else:
         for p in payments[:5]:
-            history_text += f"• {p['amount']} {p['currency']} | Status: `{p['status']}`\n"
+            history_text += f"• ₹{p['amount']} | Status: `{p['status']}`\n"
 
     kb = [
         [InlineKeyboardButton(text="🎁 Redeem Promo Code", callback_data="redeem_promo_menu")],
@@ -199,7 +217,7 @@ async def show_wallet(event: types.Message | types.CallbackQuery):
     
     text = (
         f"💰 **Your Wallet & History**\n\n"
-        f"💵 Balance: **${user['balance']:.2f}**\n\n"
+        f"💵 Balance: **₹{user['balance']:.3f}**\n\n"
         f"{history_text}"
     )
     
@@ -219,9 +237,9 @@ async def referral_handler(event: types.Message | types.CallbackQuery):
 
     text = (
         f"👥 **Referral Program**\n\n"
-        f"Invite your friends and earn **$0.50** for each referral when they start the bot!\n\n"
+        f"Invite your friends and earn **₹0.001** for each referral when they join and verify their membership!\n\n"
         f"🔗 **Your Referral Link:**\n`{ref_link}`\n\n"
-        f"📊 Total Referred Users: **{ref_count}**"
+        f"📊 Total Verified Referrals: **{ref_count}**"
     )
     kb = [[InlineKeyboardButton(text="🔙 Back", callback_data="back_home")]]
 
@@ -240,7 +258,6 @@ async def redeem_promo_prompt(event: types.Message | types.CallbackQuery, state:
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="back_home")]])
         )
     else:
-        # If text command /promo CODE
         args = event.text.split()
         if len(args) == 2:
             code = args[1]
@@ -282,7 +299,7 @@ async def show_category_items(callback: types.CallbackQuery):
                                          reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="shop")]]))
         return
     
-    kb = [[InlineKeyboardButton(text=f"{display_name} - ${price}", callback_data=f"select_acc_{acc_id}")] for acc_id, display_name, price in accounts]
+    kb = [[InlineKeyboardButton(text=f"{display_name} - ₹{price}", callback_data=f"select_acc_{acc_id}")] for acc_id, display_name, price in accounts]
     kb.append([InlineKeyboardButton(text="🔙 Back", callback_data="shop")])
     
     await callback.message.edit_text("📦 **Available Accounts (Click to Buy):**", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
@@ -304,9 +321,9 @@ async def show_purchase_confirmation(callback: types.CallbackQuery):
     text = (
         f"🛒 **Confirm Purchase**\n\n"
         f"📦 Item: {account.get('display_name', 'Account')}\n"
-        f"💰 Price: `${price:.2f}`\n"
-        f"💳 Current Balance: `${user_balance:.2f}`\n"
-        f"💳 Balance After Purchase: `${after_balance:.2f}`\n\n"
+        f"💰 Price: `₹{price:.2f}`\n"
+        f"💳 Current Balance: `₹{user_balance:.3f}`\n"
+        f"💳 Balance After Purchase: `₹{after_balance:.3f}`\n\n"
         f"Do you want to proceed?"
     )
 
@@ -393,7 +410,7 @@ async def get_otp_handler(callback: types.CallbackQuery):
             await callback.message.answer(f"📩 **Your OTP Code:** `{otp_code}`", parse_mode="Markdown")
             await callback.answer("OTP sent successfully! ✅")
         else:
-            await callback.answer("⚠️️ No OTP received yet. Please try again later.", show_alert=True)
+            await callback.answer("⚠ No OTP received yet. Please try again later.", show_alert=True)
     except Exception as e:
         await callback.answer(f"⚠️ Error fetching OTP: {e}", show_alert=True)
 
@@ -409,7 +426,7 @@ async def my_orders_handler(event: types.Message | types.CallbackQuery):
         text += "You haven't purchased any accounts yet."
     else:
         for idx, p in enumerate(purchases, 1):
-            text += f"{idx}. Amount: `${p['amount']}` | Date: `{p['timestamp']}`\n"
+            text += f"{idx}. Amount: `₹{p['amount']}` | Date: `{p['timestamp']}`\n"
 
     kb = [[InlineKeyboardButton(text="🔙 Back", callback_data="back_home")]]
     
@@ -430,15 +447,13 @@ async def my_profile_handler(callback: types.CallbackQuery):
     await callback.message.edit_text(
         f"👤 **Your Profile**\n\n"
         f"🆔 User ID: `{callback.from_user.id}`\n"
-        f"💵 Balance: **${user['balance']:.2f}**\n"
+        f"💵 Balance: **₹{user['balance']:.3f}**\n"
         f"✅ Verified: **{'Yes' if user['is_verified'] == 1 else 'No'}**",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb)
-    )
+            )
 
-# ================= PHASE 2: ADMIN PANEL & ADVANCED MANAGEMENT =================
-
-@dp.message(Command("admin"))
+    @dp.message(Command("admin"))
 @dp.callback_query(F.data == "admin_panel")
 async def admin_panel(event: types.Message | types.CallbackQuery):
     user_id = event.from_user.id
@@ -459,14 +474,13 @@ async def admin_panel(event: types.Message | types.CallbackQuery):
         [InlineKeyboardButton(text="🔙 Main Menu", callback_data="back_home")]
     ]
     markup = InlineKeyboardMarkup(inline_keyboard=kb)
-    text = "⚙️ **Admin Control Panel (Phase 2)**\n\nSelect an option below:"
+    text = "⚙️ **Admin Control Panel**\n\nSelect an option below:"
     
     if isinstance(event, types.CallbackQuery):
         await event.message.edit_text(text, reply_markup=markup, parse_mode="Markdown")
     else:
         await event.answer(text, reply_markup=markup, parse_mode="Markdown")
 
-# 1. Detailed Analytics & Stats
 @dp.callback_query(F.data == "admin_stats")
 async def admin_stats_handler(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
@@ -477,12 +491,11 @@ async def admin_stats_handler(callback: types.CallbackQuery):
         f"• Available Accounts: `{stats['available']}`\n"
         f"• Sold Accounts: `{stats['sold']}`\n"
         f"• Total Registered Users: `{stats['users']}`\n"
-        f"• Total Revenue Generated: `${stats['revenue']:.2f}`\n"
+        f"• Total Revenue Generated: `₹{stats['revenue']:.2f}`\n"
     )
     kb = [[InlineKeyboardButton(text="🔙 Back", callback_data="admin_panel")]]
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
 
-# 2. Promo Code Creation
 class CreatePromoState(StatesGroup):
     waiting_for_code_name = State()
     waiting_for_code_amount = State()
@@ -493,7 +506,7 @@ async def admin_add_promo_prompt(callback: types.CallbackQuery, state: FSMContex
         return
     await state.set_state(CreatePromoState.waiting_for_code_name)
     await callback.message.edit_text(
-        "🎁 Enter the promo code name (e.g., WELCOME50):",
+        "🎁 Enter the promo code name (e.g., WELCOME):",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="admin_panel")]])
     )
 
@@ -503,7 +516,7 @@ async def get_promo_name(message: types.Message, state: FSMContext):
         return
     await state.update_data(promo_code=message.text.strip())
     await state.set_state(CreatePromoState.waiting_for_code_amount)
-    await message.answer("💵 Enter the discount/bonus amount (e.g., 2.0):")
+    await message.answer("💵 Enter the discount/bonus amount in ₹ (e.g., 0.05):")
 
 @dp.message(CreatePromoState.waiting_for_code_amount)
 async def get_promo_amount(message: types.Message, state: FSMContext):
@@ -519,9 +532,8 @@ async def get_promo_amount(message: types.Message, state: FSMContext):
     code = data.get("promo_code")
     await db.add_promo_code(code, amount)
     await state.clear()
-    await message.answer(f"✅ Promo code `{code}` created successfully with value `${amount}`!", parse_mode="Markdown")
+    await message.answer(f"✅ Promo code `{code}` created successfully with value `₹{amount}`!", parse_mode="Markdown")
 
-# 3. Supplier API Config Placeholder
 @dp.callback_query(F.data == "admin_supplier_menu")
 async def admin_supplier_menu(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
@@ -565,7 +577,6 @@ async def supplier_get_key(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer("✅ Supplier API configuration saved successfully!")
 
-# 4. Account Health Check Placeholder
 @dp.callback_query(F.data == "admin_health_check")
 async def admin_health_check(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
@@ -575,13 +586,11 @@ async def admin_health_check(callback: types.CallbackQuery):
     text = (
         f"🩺 **Account Health Check Report**\n\n"
         f"• Total Unsold Accounts in Stock: `{total_unsold}`\n"
-        f"• Session Validation Status: All sessions are registered in DB.\n\n"
-        f"*(Note: Automated session ping check can be expanded here using Telethon client connect tests)*"
+        f"• Session Validation Status: All sessions are registered in DB.\n"
     )
     kb = [[InlineKeyboardButton(text="🔙 Back", callback_data="admin_panel")]]
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
 
-# Categories Management
 @dp.callback_query(F.data == "admin_cats")
 async def admin_cats_handler(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
@@ -614,7 +623,6 @@ async def save_edited_category(message: types.Message, state: FSMContext):
     await state.clear()
     await message.answer(f"✅ Category successfully renamed to '{new_name}'!")
 
-# User Management
 @dp.callback_query(F.data == "admin_users")
 async def admin_users_handler(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
@@ -645,7 +653,6 @@ async def execute_ban_user(message: types.Message, state: FSMContext):
     except ValueError:
         await message.answer("❌ Invalid User ID. Please send numbers only.")
 
-# Sales History
 @dp.callback_query(F.data == "admin_sales_history")
 async def admin_sales_history(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
@@ -656,12 +663,11 @@ async def admin_sales_history(callback: types.CallbackQuery):
         text += "No sales records found."
     else:
         for s in sales:
-            text += f"• User: `{s['user_id']}` | Amount: `${s['amount']}` | Date: `{s['timestamp']}`\n"
+            text += f"• User: `{s['user_id']}` | Amount: `₹{s['amount']}` | Date: `{s['timestamp']}`\n"
             
     kb = [[InlineKeyboardButton(text="🔙 Back", callback_data="admin_panel")]]
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
 
-# Broadcast Message
 @dp.callback_query(F.data == "admin_broadcast")
 async def admin_broadcast_prompt(callback: types.CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
@@ -701,7 +707,7 @@ async def admin_del_acc_list(callback: types.CallbackQuery):
         )
         return
 
-    kb = [[InlineKeyboardButton(text=f"❌ Delete {disp_name} (${price})", callback_data=f"delacc_{acc_id}")] for acc_id, disp_name, price in accounts]
+    kb = [[InlineKeyboardButton(text=f"❌ Delete {disp_name} (₹{price})", callback_data=f"delacc_{acc_id}")] for acc_id, disp_name, price in accounts]
     kb.append([InlineKeyboardButton(text="🔙 Back", callback_data="admin_panel")])
     
     await callback.message.edit_text("🗑️ **Delete Account:**\n\nClick an account to delete it:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
@@ -748,7 +754,7 @@ async def sel_cat(callback: types.CallbackQuery, state: FSMContext):
         return
     await state.update_data(category_id=int(callback.data.split("_")[1]))
     await state.set_state(AddItemState.waiting_for_display_name)
-    await callback.message.edit_text("✍️ Send display name for button (e.g., 🇮🇳 India - $2.5):")
+    await callback.message.edit_text("✍️ Send display name for button (e.g., 🇮🇳 India - ₹25):")
 
 @dp.message(AddItemState.waiting_for_display_name)
 async def get_display_name(message: types.Message, state: FSMContext):
@@ -772,7 +778,7 @@ async def get_session(message: types.Message, state: FSMContext):
         return
     await state.update_data(session_string=message.text)
     await state.set_state(AddItemState.waiting_for_price)
-    await message.answer("💵 Send price (e.g., 5.0):")
+    await message.answer("💵 Send price in ₹ (e.g., 20.0):")
 
 @dp.message(AddItemState.waiting_for_price)
 async def get_price(message: types.Message, state: FSMContext):
