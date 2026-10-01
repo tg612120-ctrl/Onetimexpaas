@@ -9,7 +9,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from config import BOT_TOKEN, OWNER_ID, REQUIRED_CHANNELS, UPI_ID, CRYPTO_ADDRESS
 import database as db
-from userbot import start_userbot_for_account
+from userbot import start_userbot_for_account, active_clients
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
@@ -153,29 +153,104 @@ async def show_category_items(callback: types.CallbackQuery):
                                          reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🔙 Back", callback_data="shop")]]))
         return
     
-    kb = [[InlineKeyboardButton(text=f"📱 {phone} - ${price}", callback_data=f"buy_{acc_id}")] for acc_id, phone, price in accounts]
+    kb = [[InlineKeyboardButton(text=f"📱 {phone} - ${price}", callback_data=f"select_acc_{acc_id}")] for acc_id, phone, price in accounts]
     kb.append([InlineKeyboardButton(text="🔙 Back", callback_data="shop")])
     
     await callback.message.edit_text("🛍️ Available Accounts (Click to Buy):", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
-@dp.callback_query(F.data.startswith("buy_"))
-async def buy_item(callback: types.CallbackQuery):
-    acc_id = int(callback.data.split("_")[1])
-    status, phone, session = await db.buy_account(callback.from_user.id, acc_id)
+# 1. Step 1: Confirm Purchase Screen Show karega (Direct Buy Nahi Hoga)
+@dp.callback_query(F.data.startswith("select_acc_"))
+async def show_purchase_confirmation(callback: types.CallbackQuery):
+    acc_id = int(callback.data.split("_")[2])
+    account = await db.get_account_by_id(acc_id)
+    
+    if not account:
+        await callback.answer("❌ Yeh account ab available nahi hai.", show_alert=True)
+        return
+
+    user = await db.get_user(callback.from_user.id)
+    user_balance = user['balance']
+    price = account['price']
+    after_balance = user_balance - price
+
+    text = (
+        f"🛒 **Confirm Purchase**\n\n"
+        f"🌍 Country: 🇮🇳 India\n"
+        f"💰 Price: `${price:.2f}`\n"
+        f"💳 Current balance: `${user_balance:.2f}`\n"
+        f"💳 After purchase: `${after_balance:.2f}`\n\n"
+        f"Proceed?"
+    )
+
+    kb = [
+        [InlineKeyboardButton(text="✅ Confirm Purchase", callback_data=f"do_buy_{acc_id}")],
+        [InlineKeyboardButton(text="❌ Cancel", callback_data="shop")]
+    ]
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+
+# 2. Step 2: Confirm dabane par Balance Katega aur Details + Get Code Button aayega
+@dp.callback_query(F.data.startswith("do_buy_"))
+async def process_purchase(callback: types.CallbackQuery):
+    acc_id = int(callback.data.split("_")[2])
+    user_id = callback.from_user.id
+    
+    status, phone, session, price, two_step = await db.buy_account_safely(user_id, acc_id)
     
     if status == "success":
-        asyncio.create_task(start_userbot_for_account(phone, session, bot, callback.from_user.id))
-        await callback.message.edit_text(
+        asyncio.create_task(start_userbot_for_account(phone, session, bot, user_id))
+        
+        text = (
             f"✅ **Purchase Successful!**\n\n"
-            f"📱 Phone: `{phone}`\n"
-            f"🔑 Session String: `{session}`\n\n"
-            f"🤖 *OTP Listener Activated!* 777000 se aane wala OTP code ab aapko yahin milega.",
-            parse_mode="Markdown"
+            f"📱 **Number:** `{phone}`\n"
+            f"🌍 **Country:** India\n"
+            f"🔑 **Session String:**\n`{session}`\n\n"
+            f"🔐 **2-Step Password:** `{two_step if two_step else 'None'}`\n\n"
+            f"👇 OTP lene ke liye neeche diye gaye button par click karein:"
         )
+        
+        kb = [
+            [InlineKeyboardButton(text="📥 Get Code", callback_data=f"get_otp_{acc_id}")],
+            [InlineKeyboardButton(text="🏠 Main Menu", callback_data="back_home")]
+        ]
+        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
     elif status == "low_balance":
         await callback.answer("❌ Insufficient balance! Wallet me balance add karein.", show_alert=True)
     else:
-        await callback.answer("❌ Sorry, yeh account sold out ho chuka hai.", show_alert=True)
+        await callback.answer("❌ Sorry, yeh account pehle hi bik chuka hai.", show_alert=True)
+
+# 3. Step 3: "Get Code" button dabane par hi OTP deliver hoga
+@dp.callback_query(F.data.startswith("get_otp_"))
+async def get_otp_handler(callback: types.CallbackQuery):
+    acc_id = int(callback.data.split("_")[2])
+    account = await db.get_account_by_id(acc_id)
+    
+    if not account:
+        await callback.answer("❌ Account details not found.", show_alert=True)
+        return
+        
+    phone = account.get('phone_number')
+    client = active_clients.get(phone)
+    
+    if not client:
+        # Agar userbot active nahi hai toh dobara start karne ki koshish karein
+        asyncio.create_task(start_userbot_for_account(phone, account['session_string'], bot, callback.from_user.id))
+        await callback.answer("⏳ Userbot initialize ho raha hai, 5 seconds baad dobara 'Get Code' dabayein.", show_alert=True)
+        return
+
+    # Check messages from 777000 or recent messages
+    try:
+        messages = await client.get_messages(777000, limit=1)
+        if messages:
+            msg_text = messages[0].message
+            import re
+            match = re.search(r'\b\d{4,6}\b', msg_text)
+            otp_code = match.group(0) if match else msg_text
+            await callback.message.answer(f"📩 **Aapka OTP Code:** `{otp_code}`", parse_mode="Markdown")
+            await callback.answer("OTP sent successfully! ✅")
+        else:
+            await callback.answer("⚠️ Abhi tak koi OTP nahi aaya hai. Thodi der baad try karein.", show_alert=True)
+    except Exception as e:
+        await callback.answer(f"⚠️ Error fetching OTP: {e}", show_alert=True)
 
 @dp.callback_query(F.data == "my_orders")
 async def my_orders_handler(callback: types.CallbackQuery):
@@ -221,7 +296,6 @@ async def admin_panel(callback: types.CallbackQuery):
     ]
     await callback.message.edit_text("⚙️ **Admin Panel**", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
-# Updated command from /givebalance to /add
 @dp.message(Command("add"))
 async def give_balance_cmd(message: types.Message):
     if message.from_user.id != OWNER_ID:
@@ -287,7 +361,8 @@ async def get_price(message: types.Message, state: FSMContext):
         return
     
     data = await state.get_data()
-    await db.add_account(data["category_id"], data["phone_number"], data["session_string"], price)
+    # 2-step password optional rkhne ke liye ya database me handle karne ke liye
+    await db.add_account(data["category_id"], data["phone_number"], data["session_string"], price, two_step="")
     await state.clear()
     await message.answer("✅ Account added successfully!")
 
@@ -301,4 +376,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-            
