@@ -453,7 +453,7 @@ async def my_profile_handler(callback: types.CallbackQuery):
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb)
             )
 
-    @dp.message(Command("admin"))
+@dp.message(Command("admin"))
 @dp.callback_query(F.data == "admin_panel")
 async def admin_panel(event: types.Message | types.CallbackQuery):
     user_id = event.from_user.id
