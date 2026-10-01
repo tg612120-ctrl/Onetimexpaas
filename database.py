@@ -1,5 +1,7 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 from config import MONGO_URI
 
 client = AsyncIOMotorClient(MONGO_URI)
@@ -11,41 +13,53 @@ users_col = db["users"]
 payments_col = db["payments"]
 counters_col = db["counters"]
 
+
 async def get_next_sequence(name: str) -> int:
     counter = await counters_col.find_one_and_update(
         {"_id": name},
         {"$inc": {"seq": 1}},
         upsert=True,
-        return_document=True
+        return_document=ReturnDocument.AFTER,
     )
     return counter["seq"]
+
 
 async def init_db():
     await categories_col.create_index("name", unique=True)
     await accounts_col.create_index("account_id", unique=True)
     await users_col.create_index("user_id", unique=True)
 
+
 # User / Wallet & Verification functions
 async def get_user(user_id: int):
-    user = await users_col.find_one({"user_id": user_id})
-    if not user:
-        user = {"user_id": user_id, "balance": 0.0, "is_verified": 0}
-        await users_col.insert_one(user)
-    return user
+    # Atomic: user nahi hai to banega, hai to wahi return hoga
+    try:
+        return await users_col.find_one_and_update(
+            {"user_id": user_id},
+            {"$setOnInsert": {"balance": 0.0, "is_verified": 0}},
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+    except DuplicateKeyError:
+        # Rare race: dusre request ne abhi create kiya, bas fetch kar lo
+        return await users_col.find_one({"user_id": user_id})
+
 
 async def update_verification(user_id: int, status: int):
     await users_col.update_one(
         {"user_id": user_id},
         {"$set": {"is_verified": status}},
-        upsert=True
+        upsert=True,
     )
+
 
 async def update_balance(user_id: int, amount: float):
     await users_col.update_one(
         {"user_id": user_id},
         {"$inc": {"balance": amount}},
-        upsert=True
+        upsert=True,
     )
+
 
 # Payment History functions
 async def save_payment_record(user_id: int, amount: float, currency: str, status: str):
@@ -54,23 +68,30 @@ async def save_payment_record(user_id: int, amount: float, currency: str, status
         "amount": amount,
         "currency": currency,
         "status": status,
-        "timestamp": datetime.utcnow()
+        "timestamp": datetime.now(timezone.utc),
     })
+
 
 async def get_user_payments(user_id: int):
     cursor = payments_col.find({"user_id": user_id}).sort("timestamp", -1)
     return await cursor.to_list(length=50)
+
 
 # Categories & Accounts functions
 async def get_categories():
     cursor = categories_col.find({})
     return [(doc["category_id"], doc["name"]) async for doc in cursor]
 
+
 async def add_category(name: str):
     existing = await categories_col.find_one({"name": name})
     if not existing:
         cat_id = await get_next_sequence("category_id")
-        await categories_col.insert_one({"category_id": cat_id, "name": name})
+        try:
+            await categories_col.insert_one({"category_id": cat_id, "name": name})
+        except DuplicateKeyError:
+            pass
+
 
 async def add_account(category_id: int, phone_number: str, session_string: str, price: float):
     acc_id = await get_next_sequence("account_id")
@@ -80,29 +101,43 @@ async def add_account(category_id: int, phone_number: str, session_string: str, 
         "phone_number": phone_number,
         "session_string": session_string,
         "price": price,
-        "is_sold": 0
+        "is_sold": 0,
     })
+
 
 async def get_available_accounts(category_id: int):
     cursor = accounts_col.find({"category_id": category_id, "is_sold": 0})
     return [(doc["account_id"], doc["phone_number"], doc["price"]) async for doc in cursor]
 
+
 async def buy_account(user_id: int, account_id: int):
-    user = await get_user(user_id)
+    await get_user(user_id)  # user exist karta hai ensure karo
+
     account = await accounts_col.find_one({"account_id": account_id, "is_sold": 0})
-    
     if not account:
         return "not_found", None, None
-    
+
     price = account["price"]
-    if user["balance"] < price:
+
+    # Step 1: balance atomically deduct (sirf tab jab balance >= price)
+    deducted = await users_col.update_one(
+        {"user_id": user_id, "balance": {"$gte": price}},
+        {"$inc": {"balance": -price}},
+    )
+    if deducted.modified_count == 0:
         return "low_balance", None, None
-    
-    await update_balance(user_id, -price)
-    await accounts_col.update_one({"account_id": account_id}, {"$set": {"is_sold": 1}})
-    
-    # Save purchase record in payments history as well
+
+    # Step 2: account atomically claim karo (sirf ek buyer jeetega)
+    claimed = await accounts_col.find_one_and_update(
+        {"account_id": account_id, "is_sold": 0},
+        {"$set": {"is_sold": 1}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not claimed:
+        # Kisi aur ne pehle le liya -> paisa refund
+        await users_col.update_one({"user_id": user_id}, {"$inc": {"balance": price}})
+        return "not_found", None, None
+
     await save_payment_record(user_id, price, "USD", "SPEND_BUY_ACCOUNT")
-    
-    return "success", account["phone_number"], account["session_string"]
-  
+
+    return "success", claimed["phone_number"], claimed["session_string"]
