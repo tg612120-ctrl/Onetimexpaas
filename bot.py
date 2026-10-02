@@ -24,6 +24,47 @@ MIN_STARS = 15
 MAX_STARS = 10000   # Telegram invoice limit
 
 
+PRIVACY_POLICY_TEXT = """📜 Privacy Policy & Terms – Tg Otp Store Bot
+
+Last updated: October 2026
+
+1. Data We Collect
+When you use this bot, we store:
+- Your Telegram user ID
+- Your wallet balance
+- Your payment and purchase history
+- Promo codes you have redeemed and referral information
+
+We do not collect your phone number, real name, or any card or payment details. Payments made with Telegram Stars are processed entirely by Telegram.
+
+2. How We Use Your Data
+- To manage your wallet and process top-ups
+- To deliver the accounts you purchase
+- To prevent fraud, abuse, and duplicate payments
+- To provide customer support
+
+3. Data Sharing
+We do not sell or share your data with third parties. Data may be disclosed only if required by law.
+
+4. Data Security
+Your data is stored in a secured database with restricted access. No system is 100% secure, but we take reasonable steps to protect it.
+
+5. No Refund & No Liability Policy
+- All purchases are final. Once an account is delivered, no refund will be given.
+- We are only responsible for delivering the account details and the login OTP.
+- After the account is logged in and the OTP is delivered, we are not responsible for anything that happens to the account, including but not limited to freeze, ban, restriction, logout, session termination, or loss of access.
+- Account safety after delivery depends on how you use it. Any issue after delivery is entirely at your own risk.
+- Wallet balance and Stars top-ups cannot be withdrawn or refunded.
+
+6. Acceptance of Terms
+By using this bot and making a purchase, you confirm that you have read and agreed to these terms.
+
+7. Your Choices
+You can stop using the bot at any time. To request deletion of your data, contact us.
+
+8. Contact
+Telegram: @izoph"""
+
 def is_admin(user_id: int) -> bool:
     return user_id == OWNER_ID or user_id == CO_OWNER_ID
 
@@ -92,6 +133,7 @@ async def set_bot_commands(bot_instance: Bot):
         BotCommand(command="myorders", description="View your purchase history 📦"),
         BotCommand(command="promo", description="Redeem promo code 🎁"),
         BotCommand(command="referral", description="Invite & earn bonus 👥"),
+        BotCommand(command="privacy", description="Privacy Policy & Terms 📜"),
     ]
     await bot_instance.set_my_commands(user_commands, scope=BotCommandScopeDefault())
 
@@ -101,6 +143,7 @@ async def set_bot_commands(bot_instance: Bot):
         BotCommand(command="myorders", description="View your purchase history 📦"),
         BotCommand(command="promo", description="Redeem promo code 🎁"),
         BotCommand(command="referral", description="Invite & earn bonus 👥"),
+        BotCommand(command="privacy", description="Privacy Policy & Terms 📜"),
         BotCommand(command="admin", description="Open Admin Panel ⚙"),
     ]
     try:
@@ -145,7 +188,8 @@ async def send_main_menu(message_or_callback, text="🛒 Welcome to the bot! Exp
             InlineKeyboardButton(text="👤 Profile", callback_data="my_profile")
         ],
         [
-            InlineKeyboardButton(text="🆘 Support", callback_data="support")
+            InlineKeyboardButton(text="🆘 Support", callback_data="support"),
+            InlineKeyboardButton(text="📜 Privacy Policy", callback_data="privacy_policy")
         ]
     ]
     if is_admin(user_id):
@@ -561,6 +605,17 @@ async def my_orders_handler(event: types.Message | types.CallbackQuery):
         await event.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
     else:
         await event.answer(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@dp.message(Command("privacy"))
+@dp.callback_query(F.data == "privacy_policy")
+async def privacy_policy_handler(event: types.Message | types.CallbackQuery):
+    kb = [[InlineKeyboardButton(text="🔙 Back", callback_data="back_home")]]
+    markup = InlineKeyboardMarkup(inline_keyboard=kb)
+    if isinstance(event, types.CallbackQuery):
+        await event.message.edit_text(PRIVACY_POLICY_TEXT, reply_markup=markup)
+        await event.answer()
+    else:
+        await event.answer(PRIVACY_POLICY_TEXT, reply_markup=markup)
 
 @dp.callback_query(F.data == "support")
 async def support_handler(callback: types.CallbackQuery):
