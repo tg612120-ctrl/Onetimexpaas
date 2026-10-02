@@ -80,6 +80,23 @@ async def save_payment_record(user_id: int, amount: float, currency: str, status
     })
 
 
+async def save_star_payment(charge_id: str, user_id: int, stars: int, inr: float) -> bool:
+    """Returns False if this charge_id was already processed (duplicate)."""
+    try:
+        await payments_col.insert_one({
+            "_id": charge_id,
+            "user_id": user_id,
+            "amount": inr,
+            "stars": stars,
+            "currency": "STARS",
+            "status": "TOPUP_SUCCESS",
+            "timestamp": datetime.now(timezone.utc),
+        })
+        return True
+    except DuplicateKeyError:
+        return False
+
+
 async def get_user_payments(user_id: int):
     cursor = payments_col.find({"user_id": user_id}).sort("timestamp", -1)
     return await cursor.to_list(length=50)
@@ -155,17 +172,16 @@ async def use_promo_code(user_id: int, code: str):
     promo = await promo_col.find_one({"code": code})
     if not promo:
         return False, "Invalid promo code."
-    
-    user = await users_col.find_one({"user_id": user_id})
-    used_codes = user.get("used_promo_codes", [])
-    if code in used_codes:
-        return False, "You have already used this promo code."
-    
+
+    await get_user(user_id)
     discount = promo["discount"]
-    await users_col.update_one(
-        {"user_id": user_id},
-        {"$inc": {"balance": discount}, "$push": {"used_promo_codes": code}}
+    # atomic: sirf tab update hoga jab user ne ye code pehle use nahi kiya
+    res = await users_col.update_one(
+        {"user_id": user_id, "used_promo_codes": {"$ne": code}},
+        {"$inc": {"balance": discount}, "$push": {"used_promo_codes": code}},
     )
+    if res.modified_count == 0:
+        return False, "You have already used this promo code."
     return True, f"Successfully redeemed! ₹{discount} added to your balance."
 
 
@@ -233,7 +249,7 @@ async def buy_account_safely(user_id: int, account_id: int):
 
     claimed = await accounts_col.find_one_and_update(
         {"account_id": account_id, "is_sold": 0},
-        {"$set": {"is_sold": 1}},
+        {"$set": {"is_sold": 1, "sold_to": user_id}},
         return_document=ReturnDocument.AFTER,
     )
     if not claimed:
