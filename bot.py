@@ -6,7 +6,7 @@ from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeChat, BotCommandScopeDefault
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, BotCommandScopeChat, BotCommandScopeDefault, LabeledPrice, PreCheckoutQuery, Message
 
 from config import BOT_TOKEN, OWNER_ID, REQUIRED_CHANNELS
 import database as db
@@ -49,7 +49,7 @@ class SupplierConfigState(StatesGroup):
 
 def mask_phone_number(phone: str) -> str:
     if len(phone) > 8:
-        return phone[:7] + "****" + phone[-2:]
+        return phone[:3] + "******" + phone[-2:]
     return phone
 
 async def set_bot_commands(bot_instance: Bot):
@@ -211,6 +211,7 @@ async def show_wallet(event: types.Message | types.CallbackQuery):
             history_text += f"• ₹{p['amount']} | Status: `{p['status']}`\n"
 
     kb = [
+        [InlineKeyboardButton(text="⭐ Add Funds via Stars", callback_data="add_funds_stars")],
         [InlineKeyboardButton(text="🎁 Redeem Promo Code", callback_data="redeem_promo_menu")],
         [InlineKeyboardButton(text="🔙 Back", callback_data="back_home")]
     ]
@@ -225,6 +226,76 @@ async def show_wallet(event: types.Message | types.CallbackQuery):
         await event.message.edit_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
     else:
         await event.answer(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@dp.callback_query(F.data == "add_funds_stars")
+async def add_funds_stars_menu(callback: types.CallbackQuery):
+    kb = [
+        [
+            InlineKeyboardButton(text="⭐ 15 Stars (₹19.5)", callback_data="buy_stars_15"),
+            InlineKeyboardButton(text="⭐ 50 Stars (₹65)", callback_data="buy_stars_50")
+        ],
+        [
+            InlineKeyboardButton(text="⭐ 100 Stars (₹130)", callback_data="buy_stars_100"),
+            InlineKeyboardButton(text="⭐ 500 Stars (₹650)", callback_data="buy_stars_500")
+        ],
+        [InlineKeyboardButton(text="🔙 Back to Wallet", callback_data="wallet")]
+    ]
+    await callback.message.edit_text(
+        "⭐ **Add Funds via Telegram Stars**\n\n"
+        "• Minimum top-up: **15 Stars**\n"
+        "• Conversion rate: `1 Star = ₹1.3`\n\n"
+        "Choose a package below:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
+        parse_mode="Markdown"
+    )
+
+@dp.callback_query(F.data.startswith("buy_stars_"))
+async def send_stars_invoice_action(callback: types.CallbackQuery):
+    stars_count = int(callback.data.split("_")[2])
+    
+    if stars_count < 15:
+        await callback.answer("❌ Minimum top-up is 15 Stars!", show_alert=True)
+        return
+
+    inr_value = stars_count * 1.3
+    prices = [LabeledPrice(label=f"{stars_count} Telegram Stars", amount=stars_count)]
+    
+    await bot.send_invoice(
+        chat_id=callback.from_user.id,
+        title="Add Wallet Balance",
+        description=f"Add ₹{inr_value:.2f} to your bot balance using Telegram Stars.",
+        payload=f"topup_{stars_count}_{inr_value}",
+        currency="XTR",
+        prices=prices,
+        provider_token=""
+    )
+    await callback.answer()
+
+@dp.pre_checkout_query()
+async def process_stars_pre_checkout(pre_checkout_query: PreCheckoutQuery):
+    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+
+@dp.message(F.successful_payment)
+async def process_stars_successful_payment(message: Message):
+    payment_info = message.successful_payment
+    payload = payment_info.invoice_payload
+    
+    if payload.startswith("topup_"):
+        parts = payload.split("_")
+        stars_paid = int(parts[1])
+        inr_added = float(parts[2])
+        
+        user_id = message.from_user.id
+        
+        await db.update_balance(user_id, inr_added)
+        await db.save_payment_record(user_id, inr_added, "STARS", "TOPUP_SUCCESS")
+        
+        await message.answer(
+            f"✅ **Payment Successful!**\n\n"
+            f"Successfully paid **{stars_paid} Stars ⭐**.\n"
+            f"Added **₹{inr_added:.2f}** to your wallet balance!",
+            parse_mode="Markdown"
+        )
 
 @dp.message(Command("referral"))
 @dp.callback_query(F.data == "referral_menu")
@@ -349,14 +420,20 @@ async def process_purchase(callback: types.CallbackQuery):
         asyncio.create_task(start_userbot_for_account(phone, session, bot, user_id))
         
         masked_phone = mask_phone_number(phone)
+        masked_user = str(user_id)[:2] + "***" + str(user_id)[-3:] if len(str(user_id)) > 5 else "***"
         bot_user = await bot.get_me()
         bot_username = bot_user.username
+        item_name = account.get('display_name', 'Account')
         
         channel_text = (
-            f"💬 **Account Purchased Notification**\n\n"
-            f"🔹 Number: `{masked_phone}` 📱\n"
-            f"🔹 Status: Purchased & Delivered ✅\n\n"
-            f"• @{bot_username}"
+            f"🚀 **NEW ACCOUNT SOLD!**\n\n"
+            f"👤 User: `{masked_user}`\n"
+            f"📦 Item: `{item_name}`\n"
+            f"📍 Region: `{item_name}`\n"
+            f"📱 Number: `{masked_phone}`\n"
+            f"💰 Price: `₹{price:.1f}`\n"
+            f"⚡ Status: Verified & Delivered\n\n"
+            f"🤖 Always use @{bot_username}"
         )
         
         LOG_CHANNEL = "@zyXzo"
@@ -451,7 +528,7 @@ async def my_profile_handler(callback: types.CallbackQuery):
         f"✅ Verified: **{'Yes' if user['is_verified'] == 1 else 'No'}**",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb)
-            )
+    )
 
 @dp.message(Command("admin"))
 @dp.callback_query(F.data == "admin_panel")
@@ -609,7 +686,7 @@ async def edit_category_start(callback: types.CallbackQuery, state: FSMContext):
     cat_id = int(callback.data.split("_")[1])
     await state.update_data(editing_cat_id=cat_id)
     await state.set_state(EditCategoryState.waiting_for_new_name)
-    await callback.message.edit_text("✍️ Send new category name:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="admin_cats")]]))
+    await callback.message.edit_text("✍ Send new category name:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="admin_cats")]]))
 
 @dp.message(EditCategoryState.waiting_for_new_name)
 async def save_edited_category(message: types.Message, state: FSMContext):
