@@ -20,14 +20,15 @@ dp = Dispatcher()
 CO_OWNER_ID = 0
 
 STAR_RATE = 1.3
-ALLOWED_STAR_PACKS = {15, 50, 100, 500}
+MIN_STARS = 15
+MAX_STARS = 10000   # Telegram invoice limit
 
 
 def is_admin(user_id: int) -> bool:
     return user_id == OWNER_ID or user_id == CO_OWNER_ID
 
 
-# ---------------- Ban middleware (sab handlers pe lagta hai) ----------------
+# ---------------- Ban middleware (applies to all handlers) ----------------
 class BanMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
         user = data.get("event_from_user")
@@ -70,6 +71,9 @@ class PromoCodeState(StatesGroup):
 class SupplierConfigState(StatesGroup):
     waiting_for_url = State()
     waiting_for_key = State()
+
+class StarsTopupState(StatesGroup):
+    waiting_for_amount = State()
 
 class CreatePromoState(StatesGroup):
     waiting_for_code_name = State()
@@ -206,7 +210,7 @@ async def verify_membership_callback(callback: types.CallbackQuery):
         user_data = await db.get_user(user_id)
         if user_data.get("referred_by") and user_data.get("referral_rewarded", 0) == 0:
             referrer_id = user_data["referred_by"]
-            # atomic: sirf ek baar reward milega
+            # atomic: reward is given only once
             res = await db.users_col.update_one(
                 {"user_id": user_id, "referral_rewarded": 0},
                 {"$set": {"referral_rewarded": 1}}
@@ -262,47 +266,39 @@ async def show_wallet(event: types.Message | types.CallbackQuery):
         await event.answer(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
 @dp.callback_query(F.data == "add_funds_stars")
-async def add_funds_stars_menu(callback: types.CallbackQuery):
-    kb = [
-        [
-            InlineKeyboardButton(text="⭐ 15 Stars (₹19.5)", callback_data="buy_stars_15"),
-            InlineKeyboardButton(text="⭐ 50 Stars (₹65)", callback_data="buy_stars_50")
-        ],
-        [
-            InlineKeyboardButton(text="⭐ 100 Stars (₹130)", callback_data="buy_stars_100"),
-            InlineKeyboardButton(text="⭐ 500 Stars (₹650)", callback_data="buy_stars_500")
-        ],
-        [InlineKeyboardButton(text="🔙 Back to Wallet", callback_data="wallet")]
-    ]
+async def add_funds_stars_menu(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(StarsTopupState.waiting_for_amount)
     await callback.message.edit_text(
         "⭐ **Add Funds via Telegram Stars**\n\n"
-        "• Minimum top-up: **15 Stars**\n"
-        "• Conversion rate: `1 Star = ₹1.3`\n\n"
-        "Choose a package below:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
+        f"• Minimum top-up: **{MIN_STARS} Stars**\n"
+        f"• Conversion rate: `1 Star = ₹{STAR_RATE}`\n\n"
+        "✍️ How many Stars do you want to add? Send a number (e.g., `50`):",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="wallet")]]),
         parse_mode="Markdown"
     )
+    await callback.answer()
 
-@dp.callback_query(F.data.startswith("buy_stars_"))
-async def send_stars_invoice_action(callback: types.CallbackQuery):
-    try:
-        stars_count = int(callback.data.split("_")[2])
-    except (IndexError, ValueError):
-        await callback.answer("❌ Invalid package.", show_alert=True)
+@dp.message(StarsTopupState.waiting_for_amount)
+async def send_stars_invoice_action(message: types.Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if not text.isdigit():
+        await message.answer("❌ Please send a whole number only (e.g., 50).")
         return
 
-    if stars_count < 15:
-        await callback.answer("❌ Minimum top-up is 15 Stars!", show_alert=True)
+    stars_count = int(text)
+    if stars_count < MIN_STARS:
+        await message.answer(f"❌ Minimum top-up is {MIN_STARS} Stars. Please send a higher number:")
         return
-    if stars_count not in ALLOWED_STAR_PACKS:
-        await callback.answer("❌ Invalid package.", show_alert=True)
+    if stars_count > MAX_STARS:
+        await message.answer(f"❌ Maximum is {MAX_STARS} Stars per top-up. Please send a lower number:")
         return
 
+    await state.clear()
     inr_value = stars_count * STAR_RATE
     prices = [LabeledPrice(label=f"{stars_count} Telegram Stars", amount=stars_count)]
 
     await bot.send_invoice(
-        chat_id=callback.from_user.id,
+        chat_id=message.from_user.id,
         title="Add Wallet Balance",
         description=f"Add ₹{inr_value:.2f} to your bot balance using Telegram Stars.",
         payload=f"topup_{stars_count}",
@@ -310,7 +306,6 @@ async def send_stars_invoice_action(callback: types.CallbackQuery):
         prices=prices,
         provider_token=""
     )
-    await callback.answer()
 
 @dp.pre_checkout_query()
 async def process_stars_pre_checkout(pre_checkout_query: PreCheckoutQuery):
@@ -324,10 +319,10 @@ async def process_stars_successful_payment(message: Message):
         return
 
     user_id = message.from_user.id
-    stars_paid = pay.total_amount            # Telegram se verified amount
+    stars_paid = pay.total_amount            # amount verified by Telegram
     inr_added = stars_paid * STAR_RATE
 
-    # duplicate protection: same charge_id dobara process nahi hoga
+    # duplicate protection: the same charge_id is never processed twice
     is_new = await db.save_star_payment(
         pay.telegram_payment_charge_id, user_id, stars_paid, inr_added
     )
@@ -520,9 +515,9 @@ async def get_otp_handler(callback: types.CallbackQuery):
         await callback.answer("❌ Account details not found.", show_alert=True)
         return
 
-    # OWNERSHIP CHECK: sirf kharidne wala user hi OTP le sakta hai
+    # OWNERSHIP CHECK: only the buyer can fetch the OTP
     if account.get("sold_to") != callback.from_user.id:
-        await callback.answer("❌ Ye account tumhara nahi hai.", show_alert=True)
+        await callback.answer("❌ This account does not belong to you.", show_alert=True)
         return
 
     phone = account.get('phone_number')
@@ -772,7 +767,7 @@ async def admin_ban_user_prompt(callback: types.CallbackQuery, state: FSMContext
     await state.update_data(ban_action=1)
     await callback.message.edit_text("✍️ Send the **User ID** of the user you want to ban:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="admin_users")]]), parse_mode="Markdown")
 
-# NOTE: original code me "admin_unban_user" ka handler tha hi nahi (button dabane pe kuch nahi hota tha). Ab add kar diya.
+# NOTE: the original code had no handler for admin_unban_user; added here.
 @dp.callback_query(F.data == "admin_unban_user")
 async def admin_unban_user_prompt(callback: types.CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
