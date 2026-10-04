@@ -14,6 +14,8 @@ payments_col = db["payments"]
 counters_col = db["counters"]
 promo_col = db["promo_codes"]
 supplier_col = db["supplier_config"]
+gp_requests_col = db["gp_requests"]
+gp_codes_col = db["gp_codes"]
 
 
 async def get_next_sequence(name: str) -> int:
@@ -210,7 +212,7 @@ async def add_category(name: str):
             pass
 
 
-async def add_account(category_id: int, display_name: str, phone_number: str, session_string: str, price: float, two_step: str = ""):
+async def add_account(category_id: int, display_name: str, phone_number: str, session_string: str, price: float, two_step: str = "", telegram_user_id=None, two_step_enabled: bool = False):
     acc_id = await get_next_sequence("account_id")
     await accounts_col.insert_one({
         "account_id": acc_id,
@@ -220,6 +222,8 @@ async def add_account(category_id: int, display_name: str, phone_number: str, se
         "session_string": session_string,
         "price": price,
         "two_step": two_step,
+        "two_step_enabled": two_step_enabled,
+        "telegram_user_id": telegram_user_id,
         "is_sold": 0,
     })
 
@@ -237,7 +241,7 @@ async def buy_account_safely(user_id: int, account_id: int):
     await get_user(user_id)
     account = await accounts_col.find_one({"account_id": account_id, "is_sold": 0})
     if not account:
-        return "not_found", None, None, None, None
+        return "not_found", None, None, None, None, None, None
 
     price = account["price"]
     deducted = await users_col.update_one(
@@ -245,7 +249,7 @@ async def buy_account_safely(user_id: int, account_id: int):
         {"$inc": {"balance": -price}},
     )
     if deducted.modified_count == 0:
-        return "low_balance", None, None, None, None
+        return "low_balance", None, None, None, None, None, None
 
     claimed = await accounts_col.find_one_and_update(
         {"account_id": account_id, "is_sold": 0},
@@ -254,10 +258,18 @@ async def buy_account_safely(user_id: int, account_id: int):
     )
     if not claimed:
         await users_col.update_one({"user_id": user_id}, {"$inc": {"balance": price}})
-        return "not_found", None, None, None, None
+        return "not_found", None, None, None, None, None, None
 
     await save_payment_record(user_id, price, "INR", "SPEND_BUY_ACCOUNT")
-    return "success", claimed["phone_number"], claimed["session_string"], claimed["price"], claimed.get("two_step", "")
+    return (
+        "success",
+        claimed["phone_number"],
+        claimed["session_string"],
+        claimed["price"],
+        claimed.get("two_step", ""),
+        claimed.get("telegram_user_id"),
+        claimed.get("two_step_enabled", False),
+    )
 
 
 async def get_all_unsold_accounts():
@@ -267,3 +279,48 @@ async def get_all_unsold_accounts():
 
 async def delete_account(acc_id: int):
     await accounts_col.delete_one({"account_id": acc_id})
+
+
+
+# ---------------- Google Play redeem code requests ----------------
+GP_MAX_PENDING = 3
+
+
+async def create_gp_request(user_id: int, amount: int, code: str, file_id: str):
+    """Returns (request_id, 'ok') or (None, 'limit' / 'duplicate')."""
+    pending = await gp_requests_col.count_documents({"user_id": user_id, "status": "pending"})
+    if pending >= GP_MAX_PENDING:
+        return None, "limit"
+    try:
+        # _id = code, so the same code can never be submitted twice
+        await gp_codes_col.insert_one({"_id": code, "user_id": user_id})
+    except DuplicateKeyError:
+        return None, "duplicate"
+    req_id = await get_next_sequence("gp_request_id")
+    await gp_requests_col.insert_one({
+        "request_id": req_id,
+        "user_id": user_id,
+        "amount": amount,
+        "code": code,
+        "file_id": file_id,
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc),
+    })
+    return req_id, "ok"
+
+
+async def get_gp_request(req_id: int):
+    return await gp_requests_col.find_one({"request_id": req_id})
+
+
+async def set_gp_status(req_id: int, status: str):
+    """Atomic: only a pending request can be approved/rejected, and only once."""
+    return await gp_requests_col.find_one_and_update(
+        {"request_id": req_id, "status": "pending"},
+        {"$set": {"status": status, "reviewed_at": datetime.now(timezone.utc)}},
+        return_document=ReturnDocument.AFTER,
+    )
+
+
+async def release_gp_code(code: str):
+    await gp_codes_col.delete_one({"_id": code})

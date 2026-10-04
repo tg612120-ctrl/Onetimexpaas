@@ -2,6 +2,9 @@ import asyncio
 import logging
 import sys
 import re
+import os
+import shutil
+import tempfile
 from aiogram import Bot, Dispatcher, F, types, BaseMiddleware
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -10,7 +13,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 
 from config import BOT_TOKEN, OWNER_ID, REQUIRED_CHANNELS
 import database as db
-from userbot import start_userbot_for_account, active_clients
+from userbot import start_userbot_for_account, active_clients, extract_account_info, get_devices, terminate_device, process_uploaded_session
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
@@ -20,6 +23,9 @@ dp = Dispatcher()
 CO_OWNER_ID = 0
 
 STAR_RATE = 1.3
+GP_MIN_AMOUNT = 10
+GP_MAX_AMOUNT = 10000
+GP_RATE = 1.0        # wallet balance given per Rs.1 of redeem code
 MIN_STARS = 15
 MAX_STARS = 10000   # Telegram invoice limit
 
@@ -90,9 +96,9 @@ dp.callback_query.middleware(BanMiddleware())
 
 class AddItemState(StatesGroup):
     waiting_for_display_name = State()
-    waiting_for_phone = State()
-    waiting_for_session = State()
     waiting_for_price = State()
+    waiting_for_session = State()
+    waiting_for_two_step = State()
 
 class AddCategoryState(StatesGroup):
     waiting_for_name = State()
@@ -112,6 +118,11 @@ class PromoCodeState(StatesGroup):
 class SupplierConfigState(StatesGroup):
     waiting_for_url = State()
     waiting_for_key = State()
+
+class GPTopupState(StatesGroup):
+    waiting_for_amount = State()
+    waiting_for_code = State()
+    waiting_for_screenshot = State()
 
 class StarsTopupState(StatesGroup):
     waiting_for_amount = State()
@@ -294,6 +305,7 @@ async def show_wallet(event: types.Message | types.CallbackQuery):
 
     kb = [
         [InlineKeyboardButton(text="⭐ Add Funds via Stars", callback_data="add_funds_stars")],
+        [InlineKeyboardButton(text="🎁 Add Funds via Google Play Code", callback_data="add_funds_gp")],
         [InlineKeyboardButton(text="🎁 Redeem Promo Code", callback_data="redeem_promo_menu")],
         [InlineKeyboardButton(text="🔙 Back", callback_data="back_home")]
     ]
@@ -317,7 +329,7 @@ async def add_funds_stars_menu(callback: types.CallbackQuery, state: FSMContext)
         f"• Minimum top-up: **{MIN_STARS} Stars**\n"
         f"• Conversion rate: `1 Star = ₹{STAR_RATE}`\n\n"
         "✍️ How many Stars do you want to add? Send a number (e.g., `50`):",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="wallet")]]),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_topup")]]),
         parse_mode="Markdown"
     )
     await callback.answer()
@@ -381,6 +393,213 @@ async def process_stars_successful_payment(message: Message):
         f"Added **₹{inr_added:.2f}** to your wallet balance!",
         parse_mode="Markdown"
     )
+
+# ======================= GOOGLE PLAY CODE TOPUP =======================
+
+def gp_cancel_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="❌ Cancel", callback_data="cancel_topup")]])
+
+def gp_admin_caption(req: dict, status_line: str = "") -> str:
+    text = (
+        f"🎁 <b>Google Play Code Request #{req['request_id']}</b>\n\n"
+        f"👤 User ID: <code>{req['user_id']}</code>\n"
+        f"💰 Amount: ₹{req['amount']}\n"
+        f"🔑 Code: <code>{req['code']}</code>"
+    )
+    if status_line:
+        text += f"\n\n{status_line}"
+    return text
+
+@dp.callback_query(F.data == "cancel_topup")
+async def cancel_topup(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await show_wallet(callback)
+
+@dp.callback_query(F.data == "add_funds_gp")
+async def add_funds_gp_menu(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(GPTopupState.waiting_for_amount)
+    await callback.message.edit_text(
+        "🎁 **Add Funds via Google Play Code**\n\n"
+        f"• Minimum amount: **₹{GP_MIN_AMOUNT}**\n"
+        "• Code amount must end with **0 or 5** (e.g., 10, 15, 20, 25, 100)\n\n"
+        "✍️ Enter the amount of your redeem code:",
+        reply_markup=gp_cancel_kb(),
+        parse_mode="Markdown"
+    )
+    await callback.answer()
+
+@dp.message(GPTopupState.waiting_for_amount)
+async def gp_get_amount(message: types.Message, state: FSMContext):
+    text = (message.text or "").strip()
+    if not text.isdigit():
+        await message.answer("❌ Please send a whole number only (e.g., 50).", reply_markup=gp_cancel_kb())
+        return
+
+    amount = int(text)
+    if amount < GP_MIN_AMOUNT:
+        await message.answer(f"❌ Minimum amount is ₹{GP_MIN_AMOUNT}. Please send a higher amount:", reply_markup=gp_cancel_kb())
+        return
+    if amount > GP_MAX_AMOUNT:
+        await message.answer(f"❌ Maximum amount is ₹{GP_MAX_AMOUNT} per code. Please send a lower amount:", reply_markup=gp_cancel_kb())
+        return
+    if amount % 5 != 0:
+        await message.answer(
+            "❌ Invalid amount. The amount must end with 0 or 5 (e.g., 10, 15, 20, 25, 100). Please try again:",
+            reply_markup=gp_cancel_kb()
+        )
+        return
+
+    await state.update_data(gp_amount=amount)
+    await state.set_state(GPTopupState.waiting_for_code)
+    await message.answer(
+        f"✅ Amount: **₹{amount}**\n\n"
+        "🔑 Now send your **Google Play redeem code** (as text):",
+        reply_markup=gp_cancel_kb(),
+        parse_mode="Markdown"
+    )
+
+@dp.message(GPTopupState.waiting_for_code)
+async def gp_get_code(message: types.Message, state: FSMContext):
+    raw = (message.text or "").strip()
+    code = re.sub(r"[\s-]", "", raw).upper()
+    if not re.fullmatch(r"[A-Z0-9]{10,30}", code):
+        await message.answer("❌ Invalid code format. Please send the redeem code as text:", reply_markup=gp_cancel_kb())
+        return
+
+    await state.update_data(gp_code=code)
+    await state.set_state(GPTopupState.waiting_for_screenshot)
+    await message.answer(
+        "📸 Now send a **screenshot of the purchase** in which the redeem code is clearly visible.",
+        reply_markup=gp_cancel_kb(),
+        parse_mode="Markdown"
+    )
+
+@dp.message(GPTopupState.waiting_for_screenshot)
+async def gp_get_screenshot(message: types.Message, state: FSMContext):
+    if not message.photo:
+        await message.answer("❌ Please send the screenshot as a photo.", reply_markup=gp_cancel_kb())
+        return
+
+    data = await state.get_data()
+    amount = data.get("gp_amount")
+    code = data.get("gp_code")
+    if not amount or not code:
+        await state.clear()
+        await message.answer("❌ Session expired. Please start again from the wallet.")
+        return
+
+    file_id = message.photo[-1].file_id
+    req_id, result = await db.create_gp_request(message.from_user.id, amount, code, file_id)
+
+    if result == "limit":
+        await state.clear()
+        await message.answer("❌ You already have pending requests. Please wait until they are reviewed.")
+        return
+    if result == "duplicate":
+        await message.answer("❌ This redeem code has already been submitted.", reply_markup=gp_cancel_kb())
+        return
+
+    req = await db.get_gp_request(req_id)
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Accept", callback_data=f"gp_ok_{req_id}"),
+        InlineKeyboardButton(text="❌ Reject", callback_data=f"gp_no_{req_id}")
+    ]])
+
+    admin_ids = [OWNER_ID] + ([CO_OWNER_ID] if CO_OWNER_ID else [])
+    delivered = False
+    for admin_id in admin_ids:
+        try:
+            await bot.send_photo(admin_id, file_id, caption=gp_admin_caption(req), reply_markup=kb, parse_mode="HTML")
+            delivered = True
+        except Exception as e:
+            print(f"GP admin notify error: {e}")
+
+    await state.clear()
+    if not delivered:
+        await db.set_gp_status(req_id, "rejected")
+        await db.release_gp_code(code)
+        await message.answer("⚠️ Could not submit your request right now. Please try again later.")
+        return
+
+    await message.answer(
+        f"✅ **Request submitted!**\n\n"
+        f"💰 Amount: ₹{amount}\n"
+        f"💳 You will receive: ₹{amount * GP_RATE:.2f}\n\n"
+        "⏳ Your code will be verified soon. You will be notified once it is approved or rejected.",
+        parse_mode="Markdown"
+    )
+
+@dp.callback_query(F.data.startswith("gp_ok_"))
+async def gp_approve(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    req_id = int(callback.data.split("_")[2])
+    req = await db.set_gp_status(req_id, "approved")
+    if not req:
+        await callback.answer("Already processed.", show_alert=True)
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        return
+
+    credit = req["amount"] * GP_RATE
+    await db.update_balance(req["user_id"], credit)
+    await db.save_payment_record(req["user_id"], credit, "GPLAY", "TOPUP_SUCCESS")
+
+    try:
+        await bot.send_message(
+            req["user_id"],
+            f"✅ **Google Play code approved!**\n\nAdded **₹{credit:.2f}** to your wallet balance.",
+            parse_mode="Markdown"
+        )
+    except Exception:
+        pass
+
+    try:
+        await callback.message.edit_caption(
+            caption=gp_admin_caption(req, "✅ <b>APPROVED</b> (balance added)"),
+            reply_markup=None, parse_mode="HTML"
+        )
+    except Exception:
+        pass
+    await callback.answer("Approved ✅")
+
+@dp.callback_query(F.data.startswith("gp_no_"))
+async def gp_reject(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    req_id = int(callback.data.split("_")[2])
+    req = await db.set_gp_status(req_id, "rejected")
+    if not req:
+        await callback.answer("Already processed.", show_alert=True)
+        try:
+            await callback.message.edit_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+        return
+
+    await db.release_gp_code(req["code"])
+
+    try:
+        await bot.send_message(
+            req["user_id"],
+            "❌ **Google Play code rejected.**\n\n"
+            "Your redeem code could not be verified (invalid, already used, or not from a valid source). "
+            "No balance was added. If you think this is a mistake, please contact support.",
+            parse_mode="Markdown"
+        )
+    except Exception:
+        pass
+
+    try:
+        await callback.message.edit_caption(
+            caption=gp_admin_caption(req, "❌ <b>REJECTED</b>"),
+            reply_markup=None, parse_mode="HTML"
+        )
+    except Exception:
+        pass
+    await callback.answer("Rejected ❌")
 
 @dp.message(Command("referral"))
 @dp.callback_query(F.data == "referral_menu")
@@ -503,7 +722,7 @@ async def process_purchase(callback: types.CallbackQuery):
         await callback.answer("❌ This account is no longer available.", show_alert=True)
         return
 
-    status, phone, session, price, two_step = await db.buy_account_safely(user_id, acc_id)
+    status, phone, session, price, two_step, tg_user_id, two_step_enabled = await db.buy_account_safely(user_id, acc_id)
 
     if status == "success":
         asyncio.create_task(start_userbot_for_account(phone, session, bot, user_id))
@@ -534,13 +753,18 @@ async def process_purchase(callback: types.CallbackQuery):
         text = (
             f"✅ **Purchase Successful!**\n\n"
             f"📱 **Number:** `{phone}`\n"
+            f"🆔 **User ID:** `{tg_user_id if tg_user_id else 'Unknown'}`\n"
             f"🔑 **Session String:**\n`{session}`\n\n"
-            f"🔐 **2-Step Password:** `{two_step if two_step else 'None'}`\n\n"
+            f"🔐 **2-Step Verification:** `{'ON' if two_step_enabled else 'OFF'}`\n"
+            f"🔑 **2-Step Password:** `{two_step if two_step else 'None'}`\n\n"
             f"👇 Click the button below to get your OTP code:"
         )
 
         kb = [
-            [InlineKeyboardButton(text="📥 Get Code", callback_data=f"get_otp_{acc_id}")],
+            [
+                InlineKeyboardButton(text="📥 Get Code", callback_data=f"get_otp_{acc_id}"),
+                InlineKeyboardButton(text="📱 Devices", callback_data=f"devices_{acc_id}")
+            ],
             [InlineKeyboardButton(text="🏠 Main Menu", callback_data="back_home")]
         ]
         await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
@@ -549,6 +773,85 @@ async def process_purchase(callback: types.CallbackQuery):
         await callback.answer("❌ Insufficient balance! Please add funds to your wallet.", show_alert=True)
     else:
         await callback.answer("❌ Sorry, this account was already sold.", show_alert=True)
+
+async def render_devices(callback: types.CallbackQuery, acc_id: int, phone: str):
+    devices, error = await get_devices(phone)
+    if error:
+        await callback.answer(f"⚠️ {error}", show_alert=True)
+        return
+    if not devices:
+        await callback.answer("No active sessions found.", show_alert=True)
+        return
+
+    lines = ["📱 **Logged-in Devices**\n"]
+    kb_rows = []
+    for idx, d in enumerate(devices, start=1):
+        if d["current"]:
+            lines.append(f"**{idx}. Device {idx}** - Bot Session (current, cannot be terminated)")
+        else:
+            extra = f" ({d['country']})" if d["country"] else ""
+            lines.append(f"**{idx}. Device {idx}** - {d['label']}{extra}")
+            kb_rows.append([InlineKeyboardButton(
+                text=f"❌ Terminate - Device {idx}",
+                callback_data=f"trm_{acc_id}_{d['hash']}"
+            )])
+
+    kb_rows.append([InlineKeyboardButton(text="🔄 Refresh", callback_data=f"devices_{acc_id}")])
+    kb_rows.append([InlineKeyboardButton(text="🔙 Back", callback_data="back_home")])
+
+    await callback.message.edit_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows),
+        parse_mode="Markdown"
+    )
+
+@dp.callback_query(F.data.startswith("devices_"))
+async def devices_handler(callback: types.CallbackQuery):
+    acc_id = int(callback.data.split("_")[1])
+    account = await db.get_account_by_id(acc_id)
+
+    if not account:
+        await callback.answer("❌ Account details not found.", show_alert=True)
+        return
+
+    if account.get("sold_to") != callback.from_user.id:
+        await callback.answer("❌ This account does not belong to you.", show_alert=True)
+        return
+
+    phone = account.get('phone_number')
+    client = active_clients.get(phone)
+
+    if not client:
+        asyncio.create_task(start_userbot_for_account(phone, account['session_string'], bot, callback.from_user.id))
+        await callback.answer("⏳ Initializing userbot, please tap 'Devices' again after 5 seconds.", show_alert=True)
+        return
+
+    await render_devices(callback, acc_id, phone)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("trm_"))
+async def terminate_device_handler(callback: types.CallbackQuery):
+    parts = callback.data.split("_", 2)
+    acc_id = int(parts[1])
+    auth_hash = int(parts[2])
+
+    account = await db.get_account_by_id(acc_id)
+    if not account:
+        await callback.answer("❌ Account details not found.", show_alert=True)
+        return
+
+    if account.get("sold_to") != callback.from_user.id:
+        await callback.answer("❌ This account does not belong to you.", show_alert=True)
+        return
+
+    phone = account.get('phone_number')
+    ok, error = await terminate_device(phone, auth_hash)
+    if not ok:
+        await callback.answer(f"⚠️ {error}", show_alert=True)
+        return
+
+    await callback.answer("✅ Device terminated!", show_alert=True)
+    await render_devices(callback, acc_id, phone)
 
 @dp.callback_query(F.data.startswith("get_otp_"))
 async def get_otp_handler(callback: types.CallbackQuery):
@@ -573,12 +876,17 @@ async def get_otp_handler(callback: types.CallbackQuery):
         return
 
     try:
-        messages = await client.get_messages(777000, limit=1)
-        if messages:
-            msg_text = messages[0].message
-            match = re.search(r'\b\d{4,6}\b', msg_text)
-            otp_code = match.group(0) if match else msg_text
-            await callback.message.answer(f"📩 **Your OTP Code:** `{otp_code}`", parse_mode="Markdown")
+        # look at the latest few messages from Telegram and take the newest one that has a code
+        messages = await client.get_messages(777000, limit=5)
+        otp_code = None
+        for m in messages:
+            match = re.search(r'\b\d{4,6}\b', m.message or "")
+            if match:
+                otp_code = match.group(0)
+                break
+
+        if otp_code:
+            await callback.message.answer(f"Your code is - `{otp_code}`", parse_mode="Markdown")
             await callback.answer("OTP sent successfully! ✅")
         else:
             await callback.answer("⚠ No OTP received yet. Please try again later.", show_alert=True)
@@ -958,22 +1266,6 @@ async def get_display_name(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
     await state.update_data(display_name=message.text)
-    await state.set_state(AddItemState.waiting_for_phone)
-    await message.answer("📱 Send phone number (e.g., +91xxxxxxxxxx):")
-
-@dp.message(AddItemState.waiting_for_phone)
-async def get_phone(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await state.update_data(phone_number=message.text)
-    await state.set_state(AddItemState.waiting_for_session)
-    await message.answer("🔑 Send Telethon Session String:")
-
-@dp.message(AddItemState.waiting_for_session)
-async def get_session(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await state.update_data(session_string=message.text)
     await state.set_state(AddItemState.waiting_for_price)
     await message.answer("💵 Send price in ₹ (e.g., 20.0):")
 
@@ -987,20 +1279,105 @@ async def get_price(message: types.Message, state: FSMContext):
         await message.answer("❌ Invalid price. Enter a valid number:")
         return
 
+    await state.update_data(price=price)
+    await state.set_state(AddItemState.waiting_for_session)
+    await message.answer(
+        "🔑 Send the account session. Any of these work:\n"
+        "• A Telethon session string (as text)\n"
+        "• A Pyrogram session string (as text)\n"
+        "• A Telethon or Pyrogram `.session` file\n"
+        "• A `.zip` file containing a `.session` file or a tdata folder",
+        parse_mode="Markdown"
+    )
+
+@dp.message(AddItemState.waiting_for_session)
+async def get_session(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+
+    checking_msg = await message.answer("🔍 Reading session, please wait...")
+    work_dir = tempfile.mkdtemp(prefix="sess_")
+    info, error = None, None
+
+    try:
+        if message.document:
+            fname = (message.document.file_name or "").lower()
+            local_path = os.path.join(work_dir, message.document.file_name or "upload.bin")
+            await bot.download(message.document, destination=local_path)
+
+            if fname.endswith(".session"):
+                info, error = await process_uploaded_session("file", local_path, work_dir)
+            elif fname.endswith(".zip"):
+                info, error = await process_uploaded_session("zip", local_path, work_dir)
+            else:
+                error = "Unsupported file type. Send a session string, a .session file, or a .zip file."
+        else:
+            text = (message.text or "").strip()
+            if not text:
+                error = "Please send a session string, a .session file, or a .zip file."
+            else:
+                # try as a Telethon string first, then as a Pyrogram string
+                info, error = await process_uploaded_session("telethon_string", text, work_dir)
+                if error:
+                    info2, error2 = await process_uploaded_session("pyrogram_string", text, work_dir)
+                    if not error2:
+                        info, error = info2, None
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+    if error or not info:
+        await checking_msg.edit_text(
+            f"❌ Session invalid. Account cannot be added.\n\n"
+            f"Reason: {error}\n\n"
+            f"Please send a valid session (string, .session file, or .zip):"
+        )
+        return
+
+    await state.update_data(
+        session_string=info["session_string"],
+        phone_number=info["phone_number"],
+        telegram_user_id=info["user_id"],
+        two_step_enabled=info["two_step_enabled"],
+    )
+
+    status_line = "ON" if info["two_step_enabled"] else "OFF"
+    await state.set_state(AddItemState.waiting_for_two_step)
+    await checking_msg.edit_text(
+        f"✅ Session verified!\n\n"
+        f"📱 Phone: `{info['phone_number']}`\n"
+        f"🆔 User ID: `{info['user_id']}`\n"
+        f"🔐 2-Step Verification (detected): **{status_line}**\n\n"
+        f"Please send the 2-Step password for this account (or send `skip` if you don't have one):",
+        parse_mode="Markdown"
+    )
+
+@dp.message(AddItemState.waiting_for_two_step)
+async def get_two_step(message: types.Message, state: FSMContext):
+    if not is_admin(message.from_user.id):
+        return
+    raw = (message.text or "").strip()
+    two_step = "" if raw.lower() == "skip" else raw
+    await state.update_data(two_step=two_step)
+    await finalize_add_account(message, state)
+
+async def finalize_add_account(message: types.Message, state: FSMContext):
     data = await state.get_data()
     await db.add_account(
         data["category_id"],
         data["display_name"],
         data["phone_number"],
         data["session_string"],
-        price,
-        two_step=""
+        data["price"],
+        two_step=data.get("two_step", ""),
+        telegram_user_id=data.get("telegram_user_id"),
+        two_step_enabled=data.get("two_step_enabled", False),
     )
     await state.clear()
-    await message.answer("✅ Account added successfully with custom display name!")
+    await message.answer("✅ Account added successfully!")
 
 @dp.callback_query(F.data == "back_home")
-async def back_home(callback: types.CallbackQuery):
+async def back_home(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
     await send_main_menu(callback)
 
 async def main():
