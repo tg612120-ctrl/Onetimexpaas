@@ -272,6 +272,11 @@ async def buy_account_safely(user_id: int, account_id: int):
     )
 
 
+async def get_accounts_by_category_full(category_id: int):
+    cursor = accounts_col.find({"category_id": category_id}).sort("account_id", 1)
+    return await cursor.to_list(length=None)
+
+
 async def get_all_unsold_accounts():
     cursor = accounts_col.find({"is_sold": 0})
     return [(doc["account_id"], doc.get("display_name", doc["phone_number"]), doc["price"]) async for doc in cursor]

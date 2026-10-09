@@ -53,6 +53,26 @@ async def terminate_device(phone_number: str, auth_hash: int):
         return False, str(e)
 
 
+async def terminate_bot_session(phone_number: str):
+    """Logs out the bot's OWN (current) session for this account.
+
+    This permanently revokes the bot's/seller's access to the account:
+    after this call, OTP fetching and the devices list will no longer
+    work for this account, because the bot itself is no longer logged in.
+    This is what makes the account fully and exclusively the buyer's.
+    """
+    client = active_clients.get(phone_number)
+    if not client or not client.is_connected():
+        return False, "Session not connected."
+    try:
+        await client.log_out()
+        return True, None
+    except Exception as e:
+        return False, str(e)
+    finally:
+        active_clients.pop(phone_number, None)
+
+
 # =====================================================================
 # Universal session loader: accepts a Telethon string, a Pyrogram string,
 # a .session file (Telethon or Pyrogram format), or a .zip containing
