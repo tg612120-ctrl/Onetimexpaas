@@ -1104,7 +1104,7 @@ async def render_devices(callback: types.CallbackQuery, acc_id: int, phone: str)
         await callback.answer("No active sessions found.", show_alert=True)
         return
 
-    lines = ["📱 **Logged-in Devices**\n"]
+    lines = ["📱 **ʟᴏɢɢᴇᴅ-ɪɴ ᴅᴇᴠɪᴄᴇꜱ**\n"]
     kb_rows = []
     for idx, d in enumerate(devices, start=1):
         if d["current"]:
@@ -1537,7 +1537,7 @@ async def admin_info_accounts(callback: types.CallbackQuery):
     start = page * ADMIN_INFO_PAGE_SIZE
     page_items = accounts[start:start + ADMIN_INFO_PAGE_SIZE]
 
-    lines = [f"ℹ️ **{label} Accounts (Page {page + 1}/{total_pages})**\n"]
+    lines = [sc(f"ℹ️ **{label} Accounts (Page {page + 1}/{total_pages})**\n")]
     for idx, acc in enumerate(page_items, start=1):
         sold_to = f"\n   👤 Buyer ID: `{acc.get('sold_to')}`" if status == "sold" and acc.get("sold_to") else ""
         lines.append(
@@ -1575,7 +1575,7 @@ async def admin_cats_handler(callback: types.CallbackQuery):
     kb.append([InlineKeyboardButton(text=sc("➕ Add New Category"), callback_data="admin_add_cat")])
     kb.append([InlineKeyboardButton(text=sc("🔙 Back"), callback_data="admin_panel")])
 
-    await callback.message.edit_text("📂 **Manage Categories:**\n\nClick a category to edit its name:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+    await callback.message.edit_text("📂 **ᴍᴀɴᴀɢᴇ ᴄᴀᴛᴇɢᴏʀɪᴇꜱ:**\n\nClick a category to edit its name:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("editcat_"))
 async def edit_category_start(callback: types.CallbackQuery, state: FSMContext):
@@ -1608,7 +1608,7 @@ async def admin_users_handler(callback: types.CallbackQuery):
         [InlineKeyboardButton(text=sc("✅ Unban a User"), callback_data="admin_unban_user")],
         [InlineKeyboardButton(text=sc("🔙 Back"), callback_data="admin_panel")]
     ]
-    await callback.message.edit_text("👥 **User Management:**", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+    await callback.message.edit_text("👥 **ᴜꜱᴇʀ ᴍᴀɴᴀɢᴇᴍᴇɴᴛ:**", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
 
 @dp.callback_query(F.data == "admin_ban_user")
 async def admin_ban_user_prompt(callback: types.CallbackQuery, state: FSMContext):
@@ -1924,7 +1924,7 @@ async def cmd_add_balance(message: types.Message):
     try:
         await bot.send_message(
             target_id,
-            f"✅ **Balance Added**\n\nAdmin has added **₹{amount:.2f}** to your wallet balance.",
+            f"✅ **ʙᴀʟᴀɴᴄᴇ ᴀᴅᴅᴇᴅ**\n\nAdmin has added **₹{amount:.2f}** to your wallet balance.",
             parse_mode="Markdown"
         )
     except Exception:
@@ -1955,7 +1955,7 @@ async def cmd_deduct_balance(message: types.Message):
     try:
         await bot.send_message(
             target_id,
-            f"⚠️ **Balance Deducted**\n\nAdmin has deducted **₹{amount:.2f}** from your wallet balance.",
+            f"⚠️ **ʙᴀʟᴀɴᴄᴇ ᴅᴇᴅᴜᴄᴛᴇᴅ**\n\nAdmin has deducted **₹{amount:.2f}** from your wallet balance.",
             parse_mode="Markdown"
         )
     except Exception:
