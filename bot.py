@@ -196,8 +196,11 @@ async def check_user_channels(user_id: int) -> bool:
             return False
     return True
 
-async def send_main_menu(message_or_callback, text="🛒 Welcome to the bot! Explore the menu below to buy accounts and manage your wallet."):
+BOT_DISPLAY_NAME = "Tg Otp Store Bot"
+
+async def send_main_menu(message_or_callback, note: str = ""):
     user_id = message_or_callback.from_user.id
+    first_name = message_or_callback.from_user.first_name or "there"
 
     user_data = await db.get_user(user_id)
     if user_data and user_data.get('is_banned', 0) == 1:
@@ -207,21 +210,41 @@ async def send_main_menu(message_or_callback, text="🛒 Welcome to the bot! Exp
             await message_or_callback.answer("❌ You are banned from using this bot.")
         return
 
+    balance = user_data.get("balance", 0.0) if user_data else 0.0
+    note_block = f"{note}\n\n" if note else ""
+
+    text = (
+        f"👋 Hi {first_name},\n"
+        f"{note_block}"
+        f"💎 **{sc(BOT_DISPLAY_NAME)}** 🤖\n"
+        f"Premium Digital Services & Assets.\n\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"🆔 {user_id}\n"
+        f"💰 Your Wallet: ₹{balance:.2f}\n"
+        f"━━━━━━━━━━━━━━━\n\n"
+        f"⚡ Instant Delivery\n"
+        f"🔒 Secure Payments\n\n"
+        f"👇 Select an option:"
+    )
+
     kb = [
         [
             InlineKeyboardButton(text=sc("🛒 Buy Now"), callback_data="shop"),
             InlineKeyboardButton(text=sc("💳 Wallet"), callback_data="wallet")
         ],
         [
-            InlineKeyboardButton(text=sc("📦 My Orders"), callback_data="my_orders"),
-            InlineKeyboardButton(text=sc("🎁 Redeem Promo"), callback_data="redeem_promo_menu")
+            InlineKeyboardButton(text=sc("➕ Deposit"), callback_data="add_funds_deposit"),
+            InlineKeyboardButton(text=sc("📦 My Orders"), callback_data="my_orders")
         ],
         [
-            InlineKeyboardButton(text=sc("👥 Referral"), callback_data="referral_menu"),
-            InlineKeyboardButton(text=sc("👤 Profile"), callback_data="my_profile")
+            InlineKeyboardButton(text=sc("🎁 Redeem Promo"), callback_data="redeem_promo_menu"),
+            InlineKeyboardButton(text=sc("👥 Referral"), callback_data="referral_menu")
         ],
         [
-            InlineKeyboardButton(text=sc("🆘 Support"), callback_data="support"),
+            InlineKeyboardButton(text=sc("👤 Profile"), callback_data="my_profile"),
+            InlineKeyboardButton(text=sc("🆘 Support"), callback_data="support")
+        ],
+        [
             InlineKeyboardButton(text=sc("📜 Privacy Policy"), callback_data="privacy_policy")
         ]
     ]
@@ -260,7 +283,7 @@ async def cmd_start(message: types.Message):
     if user_data["is_verified"] == 1:
         still_member = await check_user_channels(user_id)
         if still_member:
-            await send_main_menu(message, f"Welcome back, {message.from_user.first_name}!\n\n🛒 Explore the menu below to buy accounts.")
+            await send_main_menu(message, "✅ Welcome back!")
             return
         else:
             await db.update_verification(user_id, 0)
@@ -307,7 +330,7 @@ async def verify_membership_callback(callback: types.CallbackQuery):
                     pass
 
         await callback.answer("Verified successfully! ✅", show_alert=True)
-        await send_main_menu(callback, "🎉 **ᴠᴇʀɪꜰɪᴄᴀᴛɪᴏɴ ꜱᴜᴄᴄᴇꜱꜱꜰᴜʟ!**\n\n🛒 Explore the menu below.")
+        await send_main_menu(callback, "🎉 Verification Successful!")
     else:
         await callback.answer("❌ You haven't joined all required channels yet! Please join them first.", show_alert=True)
 
