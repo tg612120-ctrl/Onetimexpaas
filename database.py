@@ -16,6 +16,7 @@ promo_col = db["promo_codes"]
 supplier_col = db["supplier_config"]
 gp_requests_col = db["gp_requests"]
 gp_codes_col = db["gp_codes"]
+deposit_requests_col = db["deposit_requests"]
 
 
 async def get_next_sequence(name: str) -> int:
@@ -329,3 +330,38 @@ async def set_gp_status(req_id: int, status: str):
 
 async def release_gp_code(code: str):
     await gp_codes_col.delete_one({"_id": code})
+
+
+# ---------------- Deposit (UPI / Crypto) requests ----------------
+
+async def create_deposit_request(user_id: int, amount: int, method: str, file_id: str):
+    """Only one pending deposit request per user at a time.
+    Returns (request_id, 'ok') or (None, 'pending')."""
+    existing = await deposit_requests_col.find_one({"user_id": user_id, "status": "pending"})
+    if existing:
+        return None, "pending"
+
+    req_id = await get_next_sequence("deposit_request_id")
+    await deposit_requests_col.insert_one({
+        "request_id": req_id,
+        "user_id": user_id,
+        "amount": amount,
+        "method": method,
+        "file_id": file_id,
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc),
+    })
+    return req_id, "ok"
+
+
+async def get_deposit_request(req_id: int):
+    return await deposit_requests_col.find_one({"request_id": req_id})
+
+
+async def set_deposit_status(req_id: int, status: str):
+    """Atomic: only a pending request can be approved/rejected, and only once."""
+    return await deposit_requests_col.find_one_and_update(
+        {"request_id": req_id, "status": "pending"},
+        {"$set": {"status": status, "reviewed_at": datetime.now(timezone.utc)}},
+        return_document=ReturnDocument.AFTER,
+    )
