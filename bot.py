@@ -228,28 +228,26 @@ async def send_main_menu(message_or_callback, note: str = ""):
     )
 
     kb = [
+        [InlineKeyboardButton(text=sc("🟢 🛒 Buy Now"), callback_data="shop")],
         [
-            InlineKeyboardButton(text=sc("🛒 Buy Now"), callback_data="shop"),
-            InlineKeyboardButton(text=sc("💳 Wallet"), callback_data="wallet")
+            InlineKeyboardButton(text=sc("🔵 💳 Wallet"), callback_data="wallet"),
+            InlineKeyboardButton(text=sc("🔵 ➕ Deposit"), callback_data="add_funds_deposit")
         ],
         [
-            InlineKeyboardButton(text=sc("➕ Deposit"), callback_data="add_funds_deposit"),
-            InlineKeyboardButton(text=sc("📦 My Orders"), callback_data="my_orders")
+            InlineKeyboardButton(text=sc("🔵 📦 My Orders"), callback_data="my_orders"),
+            InlineKeyboardButton(text=sc("🔵 🎁 Redeem Promo"), callback_data="redeem_promo_menu")
         ],
         [
-            InlineKeyboardButton(text=sc("🎁 Redeem Promo"), callback_data="redeem_promo_menu"),
-            InlineKeyboardButton(text=sc("👥 Referral"), callback_data="referral_menu")
+            InlineKeyboardButton(text=sc("🟣 👥 Referral"), callback_data="referral_menu"),
+            InlineKeyboardButton(text=sc("🟣 👤 Profile"), callback_data="my_profile")
         ],
         [
-            InlineKeyboardButton(text=sc("👤 Profile"), callback_data="my_profile"),
-            InlineKeyboardButton(text=sc("🆘 Support"), callback_data="support")
-        ],
-        [
-            InlineKeyboardButton(text=sc("📜 Privacy Policy"), callback_data="privacy_policy")
+            InlineKeyboardButton(text=sc("🔴 🆘 Support"), callback_data="support"),
+            InlineKeyboardButton(text=sc("🔴 📜 Privacy Policy"), callback_data="privacy_policy")
         ]
     ]
     if is_admin(user_id):
-        kb.append([InlineKeyboardButton(text=sc("⚙️ Admin Panel"), callback_data="admin_panel")])
+        kb.append([InlineKeyboardButton(text=sc("🟠 ⚙️ Admin Panel"), callback_data="admin_panel")])
 
     markup = InlineKeyboardMarkup(inline_keyboard=kb)
     if isinstance(message_or_callback, types.CallbackQuery):
