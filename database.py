@@ -7,6 +7,7 @@ from config import MONGO_URI
 client = AsyncIOMotorClient(MONGO_URI)
 db = client["telegram_otp_bot"]
 
+tiers_col = db["tiers"]
 categories_col = db["categories"]
 accounts_col = db["accounts"]
 users_col = db["users"]
@@ -29,9 +30,15 @@ async def get_next_sequence(name: str) -> int:
 
 
 async def init_db():
-    await categories_col.create_index("name", unique=True)
+    try:
+        await categories_col.drop_index("name_1")
+    except Exception:
+        pass
+    await categories_col.create_index([("name", 1), ("tier", 1)], unique=True)
     await accounts_col.create_index("account_id", unique=True)
     await users_col.create_index("user_id", unique=True)
+    # migrate any pre-existing categories (created before tiers existed) into "fresh"
+    await categories_col.update_many({"tier": {"$exists": False}}, {"$set": {"tier": "fresh"}})
 
 
 async def get_user(user_id: int):
@@ -103,13 +110,15 @@ async def get_user_payments(user_id: int):
     return await cursor.to_list(length=50)
 
 
-async def get_categories():
-    cursor = categories_col.find({})
+async def get_categories(tier: str = None):
+    query = {"tier": tier} if tier else {}
+    cursor = categories_col.find(query)
     return [(doc["category_id"], doc["name"]) async for doc in cursor]
 
 
-async def get_categories_with_counts():
-    cursor = categories_col.find({})
+async def get_categories_with_counts(tier: str = None):
+    query = {"tier": tier} if tier else {}
+    cursor = categories_col.find(query)
     categories = await cursor.to_list(length=None)
     result = []
     for cat in categories:
@@ -118,6 +127,10 @@ async def get_categories_with_counts():
         available_count = await accounts_col.count_documents({"category_id": cat_id, "is_sold": 0})
         result.append((cat_id, cat_name, available_count))
     return result
+
+
+async def get_category_by_id(cat_id: int):
+    return await categories_col.find_one({"category_id": cat_id})
 
 
 async def update_category_name(cat_id: int, new_name: str):
@@ -176,14 +189,19 @@ async def get_supplier_config():
     return config
 
 
-async def add_category(name: str):
-    existing = await categories_col.find_one({"name": name})
-    if not existing:
-        cat_id = await get_next_sequence("category_id")
-        try:
-            await categories_col.insert_one({"category_id": cat_id, "name": name})
-        except DuplicateKeyError:
-            pass
+async def add_category(name: str, tier: str):
+    """Returns the category_id, creating it if it doesn't already exist under this tier."""
+    existing = await categories_col.find_one({"name": name, "tier": tier})
+    if existing:
+        return existing["category_id"]
+
+    cat_id = await get_next_sequence("category_id")
+    try:
+        await categories_col.insert_one({"category_id": cat_id, "name": name, "tier": tier})
+    except DuplicateKeyError:
+        existing = await categories_col.find_one({"name": name, "tier": tier})
+        return existing["category_id"] if existing else None
+    return cat_id
 
 
 async def add_account(category_id: int, display_name: str, phone_number: str, session_string: str, price: float, two_step: str = "", telegram_user_id=None, two_step_enabled: bool = False):

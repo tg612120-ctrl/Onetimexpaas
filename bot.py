@@ -920,20 +920,45 @@ async def referral_handler(event: types.Message | types.CallbackQuery):
     else:
         await event.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
 
+TIER_LABELS = {"fresh": "🆕 Fresh", "old": "📦 Old", "spam": "⚠️ Spam"}
+
 @dp.callback_query(F.data == "shop")
 async def show_shop(callback: types.CallbackQuery):
-    categories = await db.get_categories_with_counts()
+    kb = [
+        [InlineKeyboardButton(text=sc("🆕 Fresh"), callback_data="tier_fresh")],
+        [InlineKeyboardButton(text=sc("📦 Old"), callback_data="tier_old")],
+        [InlineKeyboardButton(text=sc("⚠️ Spam"), callback_data="tier_spam")],
+        [InlineKeyboardButton(text=sc("🔙 Back"), callback_data="back_home")]
+    ]
+    await callback.message.edit_text(
+        sc("🛍️ **Select an Account Type:**"),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
+        parse_mode="Markdown"
+    )
+
+@dp.callback_query(F.data.startswith("tier_"))
+async def show_tier_categories(callback: types.CallbackQuery):
+    tier = callback.data.split("_", 1)[1]
+    label = TIER_LABELS.get(tier, tier)
+
+    categories = await db.get_categories_with_counts(tier)
     if not categories:
-        await callback.message.edit_text("❌ No categories available right now.",
-                                         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=sc("🔙 Back"), callback_data="back_home")]]))
+        await callback.message.edit_text(
+            f"❌ No categories available in {label} yet.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=sc("🔙 Back"), callback_data="shop")]])
+        )
         return
 
     kb = []
     for c_id, c_name, available_count in categories:
         kb.append([InlineKeyboardButton(text=sc(f"📂 {c_name} ({available_count} Available)"), callback_data=f"cat_{c_id}")])
-    kb.append([InlineKeyboardButton(text=sc("🔙 Back"), callback_data="back_home")])
+    kb.append([InlineKeyboardButton(text=sc("🔙 Back"), callback_data="shop")])
 
-    await callback.message.edit_text("🛍️ **ꜱᴇʟᴇᴄᴛ ᴀ ᴄᴀᴛᴇɢᴏʀʏ:**", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+    await callback.message.edit_text(
+        sc(f"🛍️ **{label} — Select a Country:**"),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
+        parse_mode="Markdown"
+    )
 
 SHOP_PAGE_SIZE = 5
 
@@ -943,11 +968,15 @@ async def show_category_items(callback: types.CallbackQuery):
     cat_id = int(parts[1])
     page = int(parts[2]) if len(parts) > 2 else 0
 
+    category = await db.get_category_by_id(cat_id)
+    tier = category.get("tier", "fresh") if category else "fresh"
+    back_target = f"tier_{tier}"
+
     accounts = await db.get_available_accounts(cat_id)
 
     if not accounts:
         await callback.message.edit_text("❌ No accounts available in this category.",
-                                         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=sc("🔙 Back"), callback_data="shop")]]))
+                                         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=sc("🔙 Back"), callback_data=back_target)]]))
         return
 
     total_pages = (len(accounts) + SHOP_PAGE_SIZE - 1) // SHOP_PAGE_SIZE
@@ -965,7 +994,7 @@ async def show_category_items(callback: types.CallbackQuery):
     if nav_row:
         kb.append(nav_row)
 
-    kb.append([InlineKeyboardButton(text=sc("🔙 Back"), callback_data="shop")])
+    kb.append([InlineKeyboardButton(text=sc("🔙 Back"), callback_data=back_target)])
 
     await callback.message.edit_text(
         sc(f"📦 **Available Accounts (Page {page + 1}/{total_pages}):**"),
@@ -1425,18 +1454,37 @@ async def admin_health_check(callback: types.CallbackQuery):
 async def admin_info_categories(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
         return
-    categories = await db.get_categories_with_counts()
+    kb = [
+        [InlineKeyboardButton(text=sc("🆕 Fresh"), callback_data="admininfotier_fresh")],
+        [InlineKeyboardButton(text=sc("📦 Old"), callback_data="admininfotier_old")],
+        [InlineKeyboardButton(text=sc("⚠️ Spam"), callback_data="admininfotier_spam")],
+        [InlineKeyboardButton(text=sc("🔙 Back"), callback_data="admin_panel")]
+    ]
+    await callback.message.edit_text(
+        sc("ℹ️ **Select a type:**"),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
+        parse_mode="Markdown"
+    )
+
+@dp.callback_query(F.data.startswith("admininfotier_"))
+async def admin_info_tier_categories(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    tier = callback.data.split("_", 1)[1]
+    label = TIER_LABELS.get(tier, tier)
+
+    categories = await db.get_categories_with_counts(tier)
     if not categories:
         await callback.message.edit_text(
-            "❌ No categories available.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=sc("🔙 Back"), callback_data="admin_panel")]])
+            f"❌ No categories available in {label}.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=sc("🔙 Back"), callback_data="admin_info")]])
         )
         return
 
     kb = [[InlineKeyboardButton(text=sc(f"📂 {name}"), callback_data=f"infostat_{cid}")] for cid, name, _count in categories]
-    kb.append([InlineKeyboardButton(text=sc("🔙 Back"), callback_data="admin_panel")])
+    kb.append([InlineKeyboardButton(text=sc("🔙 Back"), callback_data="admin_info")])
     await callback.message.edit_text(
-        "ℹ️ **ꜱᴇʟᴇᴄᴛ ᴀ ᴄᴀᴛᴇɢᴏʀʏ ᴛᴏ ᴠɪᴇᴡ ᴀᴄᴄᴏᴜɴᴛ ɪɴꜰᴏ:**",
+        sc(f"ℹ️ **{label} — Select a category to view account info:**"),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
         parse_mode="Markdown"
     )
@@ -1447,11 +1495,15 @@ async def admin_info_status_menu(callback: types.CallbackQuery):
         return
     cat_id = int(callback.data.split("_")[1])
 
+    category = await db.get_category_by_id(cat_id)
+    tier = category.get("tier", "fresh") if category else "fresh"
+    back_target = f"admininfotier_{tier}"
+
     accounts = await db.get_accounts_by_category_full(cat_id)
     if not accounts:
         await callback.message.edit_text(
             "❌ No accounts in this category.",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=sc("🔙 Back"), callback_data="admin_info")]])
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=sc("🔙 Back"), callback_data=back_target)]])
         )
         return
 
@@ -1461,10 +1513,10 @@ async def admin_info_status_menu(callback: types.CallbackQuery):
     kb = [
         [InlineKeyboardButton(text=sc(f"✅ Available ({available_count})"), callback_data=f"infolist_{cat_id}_avail_0")],
         [InlineKeyboardButton(text=sc(f"❌ Sold ({sold_count})"), callback_data=f"infolist_{cat_id}_sold_0")],
-        [InlineKeyboardButton(text=sc("🔙 Back"), callback_data="admin_info")]
+        [InlineKeyboardButton(text=sc("🔙 Back"), callback_data=back_target)]
     ]
     await callback.message.edit_text(
-        "ℹ️ **ᴄʜᴏᴏꜱᴇ ᴡʜɪᴄʜ ᴀᴄᴄᴏᴜɴᴛꜱ ᴛᴏ ᴠɪᴇᴡ:**",
+        sc("ℹ️ **Choose which accounts to view:**"),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
         parse_mode="Markdown"
     )
@@ -1533,21 +1585,50 @@ async def admin_info_accounts(callback: types.CallbackQuery):
 async def admin_cats_handler(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
         return
-    categories = await db.get_categories()
-    kb = [[InlineKeyboardButton(text=sc(f"✏️ Edit: {c[1]}"), callback_data=f"editcat_{c[0]}")] for c in categories]
-    kb.append([InlineKeyboardButton(text=sc("➕ Add New Category"), callback_data="admin_add_cat")])
-    kb.append([InlineKeyboardButton(text=sc("🔙 Back"), callback_data="admin_panel")])
+    kb = [
+        [InlineKeyboardButton(text=sc("🆕 Fresh"), callback_data="admincattier_fresh")],
+        [InlineKeyboardButton(text=sc("📦 Old"), callback_data="admincattier_old")],
+        [InlineKeyboardButton(text=sc("⚠️ Spam"), callback_data="admincattier_spam")],
+        [InlineKeyboardButton(text=sc("🔙 Back"), callback_data="admin_panel")]
+    ]
+    await callback.message.edit_text(
+        sc("📂 **Manage Categories:**\n\nSelect a type:"),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
+        parse_mode="Markdown"
+    )
 
-    await callback.message.edit_text("📂 **ᴍᴀɴᴀɢᴇ ᴄᴀᴛᴇɢᴏʀɪᴇꜱ:**\n\nClick a category to edit its name:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+@dp.callback_query(F.data.startswith("admincattier_"))
+async def admin_cats_by_tier(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    tier = callback.data.split("_", 1)[1]
+    label = TIER_LABELS.get(tier, tier)
+
+    categories = await db.get_categories(tier)
+    kb = [[InlineKeyboardButton(text=sc(f"✏️ Edit: {c[1]}"), callback_data=f"editcat_{c[0]}")] for c in categories]
+    kb.append([InlineKeyboardButton(text=sc("➕ Add New Category"), callback_data=f"admin_add_cat_{tier}")])
+    kb.append([InlineKeyboardButton(text=sc("🔙 Back"), callback_data="admin_cats")])
+
+    await callback.message.edit_text(
+        sc(f"📂 **{label} Categories:**\n\nClick a category to edit its name:"),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
+        parse_mode="Markdown"
+    )
 
 @dp.callback_query(F.data.startswith("editcat_"))
 async def edit_category_start(callback: types.CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         return
     cat_id = int(callback.data.split("_")[1])
-    await state.update_data(editing_cat_id=cat_id)
+    category = await db.get_category_by_id(cat_id)
+    tier = category.get("tier", "fresh") if category else "fresh"
+
+    await state.update_data(editing_cat_id=cat_id, editing_cat_tier=tier)
     await state.set_state(EditCategoryState.waiting_for_new_name)
-    await callback.message.edit_text("✍ Send new category name:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=sc("❌ Cancel"), callback_data="admin_cats")]]))
+    await callback.message.edit_text(
+        "✍ Send new category name:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=sc("❌ Cancel"), callback_data=f"admincattier_{tier}")]])
+    )
 
 @dp.message(EditCategoryState.waiting_for_new_name)
 async def save_edited_category(message: types.Message, state: FSMContext):
@@ -1555,11 +1636,12 @@ async def save_edited_category(message: types.Message, state: FSMContext):
         return
     data = await state.get_data()
     cat_id = data.get("editing_cat_id")
+    tier = data.get("editing_cat_tier", "fresh")
     new_name = message.text
 
     await db.update_category_name(cat_id, new_name)
     await state.clear()
-    kb = [[InlineKeyboardButton(text=sc("🔙 Back"), callback_data="admin_cats")]]
+    kb = [[InlineKeyboardButton(text=sc("🔙 Back"), callback_data=f"admincattier_{tier}")]]
     await message.answer(f"✅ Category successfully renamed to '{new_name}'!", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
 @dp.callback_query(F.data == "admin_users")
@@ -1678,24 +1760,38 @@ async def delete_account_action(callback: types.CallbackQuery):
     await callback.answer("✅ Account successfully deleted!", show_alert=True)
     await admin_del_acc_list(callback)
 
-@dp.callback_query(F.data == "admin_add_cat")
+@dp.callback_query(F.data.startswith("admin_add_cat_"))
 async def admin_add_cat(callback: types.CallbackQuery, state: FSMContext):
     if not is_admin(callback.from_user.id):
         return
+    tier = callback.data.rsplit("_", 1)[1]
+    label = TIER_LABELS.get(tier, tier)
+
+    await state.update_data(new_cat_tier=tier)
     await state.set_state(AddCategoryState.waiting_for_name)
     await callback.message.edit_text(
-        "✍️ Send category name:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=sc("❌ Cancel"), callback_data="admin_cats")]])
+        f"✍️ Send the country name to add under {label}:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=sc("❌ Cancel"), callback_data="admin_panel")]])
     )
 
 @dp.message(AddCategoryState.waiting_for_name)
 async def save_cat(message: types.Message, state: FSMContext):
     if not is_admin(message.from_user.id):
         return
-    await db.add_category(message.text)
+    data = await state.get_data()
+    tier = data.get("new_cat_tier", "fresh")
+    label = TIER_LABELS.get(tier, tier)
+
+    cat_id = await db.add_category(message.text, tier)
     await state.clear()
-    kb = [[InlineKeyboardButton(text=sc("🔙 Back"), callback_data="admin_cats")]]
-    await message.answer(f"✅ Category '{message.text}' added successfully!", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    kb = [
+        [InlineKeyboardButton(text=sc("➕ Add Account Here"), callback_data=f"selcat_{cat_id}")],
+        [InlineKeyboardButton(text=sc("🔙 Back"), callback_data=f"admincattier_{tier}")]
+    ]
+    await message.answer(
+        f"✅ Category '{message.text}' added successfully under {label}!",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb)
+    )
 
 @dp.message(Command("add"))
 @dp.callback_query(F.data == "admin_add_acc")
@@ -1704,23 +1800,37 @@ async def admin_add_acc(event: types.Message | types.CallbackQuery, state: FSMCo
     if not is_admin(user_id):
         return
 
-    categories = await db.get_categories()
-    if not categories:
-        text = "❌ Please create a category first!"
-        if isinstance(event, types.CallbackQuery):
-            await event.message.edit_text(text)
-        else:
-            await event.answer(text)
-        return
-
-    kb = [[InlineKeyboardButton(text=sc(c[1]), callback_data=f"selcat_{c[0]}")] for c in categories]
-    kb.append([InlineKeyboardButton(text=sc("🔙 Back"), callback_data="admin_panel")])
+    await state.clear()
+    kb = [
+        [InlineKeyboardButton(text=sc("🆕 Fresh"), callback_data="addacctier_fresh")],
+        [InlineKeyboardButton(text=sc("📦 Old"), callback_data="addacctier_old")],
+        [InlineKeyboardButton(text=sc("⚠️ Spam"), callback_data="addacctier_spam")],
+        [InlineKeyboardButton(text=sc("🔙 Back"), callback_data="admin_panel")]
+    ]
     markup = InlineKeyboardMarkup(inline_keyboard=kb)
+    text = sc("➕ **Add Account**\n\nSelect a type:")
 
     if isinstance(event, types.CallbackQuery):
-        await event.message.edit_text("📂 Select category:", reply_markup=markup)
+        await event.message.edit_text(text, reply_markup=markup, parse_mode="Markdown")
+        await event.answer()
     else:
-        await event.answer("📂 Select category:", reply_markup=markup)
+        await event.answer(text, reply_markup=markup, parse_mode="Markdown")
+
+@dp.callback_query(F.data.startswith("addacctier_"))
+async def admin_add_acc_pick_category(callback: types.CallbackQuery, state: FSMContext):
+    if not is_admin(callback.from_user.id):
+        return
+    tier = callback.data.split("_", 1)[1]
+    label = TIER_LABELS.get(tier, tier)
+
+    categories = await db.get_categories(tier)
+    kb = [[InlineKeyboardButton(text=sc(c[1]), callback_data=f"selcat_{c[0]}")] for c in categories]
+    kb.append([InlineKeyboardButton(text=sc("➕ Add New Country"), callback_data=f"admin_add_cat_{tier}")])
+    kb.append([InlineKeyboardButton(text=sc("🔙 Back"), callback_data="admin_add_acc")])
+    markup = InlineKeyboardMarkup(inline_keyboard=kb)
+
+    await callback.message.edit_text(sc(f"📂 {label} — Select a country:"), reply_markup=markup, parse_mode="Markdown")
+    await callback.answer()
 
 def admin_cancel_kb():
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=sc("❌ Cancel"), callback_data="admin_add_cancel")]])
