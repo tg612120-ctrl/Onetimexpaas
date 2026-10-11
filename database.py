@@ -34,11 +34,33 @@ async def init_db():
         await categories_col.drop_index("name_1")
     except Exception:
         pass
-    await categories_col.create_index([("name", 1), ("tier", 1)], unique=True)
+    await tiers_col.create_index("name", unique=True)
+    await categories_col.create_index([("name", 1), ("tier_id", 1)], unique=True)
     await accounts_col.create_index("account_id", unique=True)
     await users_col.create_index("user_id", unique=True)
-    # migrate any pre-existing categories (created before tiers existed) into "fresh"
-    await categories_col.update_many({"tier": {"$exists": False}}, {"$set": {"tier": "fresh"}})
+
+    # Seed the default types if they don't exist yet (admin can add more later)
+    default_tier_names = ["Fresh", "Old", "Spam"]
+    tier_ids = {}
+    for name in default_tier_names:
+        existing = await tiers_col.find_one({"name": name})
+        if existing:
+            tier_ids[name] = existing["tier_id"]
+        else:
+            tid = await get_next_sequence("tier_id")
+            await tiers_col.insert_one({"tier_id": tid, "name": name})
+            tier_ids[name] = tid
+
+    # Migrate any pre-existing categories into tier_id form:
+    # - categories with the old string "tier" field (fresh/old/spam) -> matching tier_id
+    # - categories with neither "tier" nor "tier_id" -> default to "Fresh"
+    legacy_map = {"fresh": tier_ids["Fresh"], "old": tier_ids["Old"], "spam": tier_ids["Spam"]}
+    async for cat in categories_col.find({"tier_id": {"$exists": False}}):
+        new_tier_id = legacy_map.get(cat.get("tier"), tier_ids["Fresh"])
+        await categories_col.update_one(
+            {"_id": cat["_id"]},
+            {"$set": {"tier_id": new_tier_id}, "$unset": {"tier": ""}}
+        )
 
 
 async def get_user(user_id: int):
@@ -110,14 +132,37 @@ async def get_user_payments(user_id: int):
     return await cursor.to_list(length=50)
 
 
-async def get_categories(tier: str = None):
-    query = {"tier": tier} if tier else {}
+async def get_tiers():
+    cursor = tiers_col.find({})
+    return [(doc["tier_id"], doc["name"]) async for doc in cursor]
+
+
+async def add_tier(name: str):
+    """Returns the tier_id, creating it if it doesn't already exist."""
+    existing = await tiers_col.find_one({"name": name})
+    if existing:
+        return existing["tier_id"]
+    tid = await get_next_sequence("tier_id")
+    try:
+        await tiers_col.insert_one({"tier_id": tid, "name": name})
+    except DuplicateKeyError:
+        existing = await tiers_col.find_one({"name": name})
+        return existing["tier_id"] if existing else None
+    return tid
+
+
+async def get_tier_by_id(tier_id: int):
+    return await tiers_col.find_one({"tier_id": tier_id})
+
+
+async def get_categories(tier_id: int = None):
+    query = {"tier_id": tier_id} if tier_id is not None else {}
     cursor = categories_col.find(query)
     return [(doc["category_id"], doc["name"]) async for doc in cursor]
 
 
-async def get_categories_with_counts(tier: str = None):
-    query = {"tier": tier} if tier else {}
+async def get_categories_with_counts(tier_id: int = None):
+    query = {"tier_id": tier_id} if tier_id is not None else {}
     cursor = categories_col.find(query)
     categories = await cursor.to_list(length=None)
     result = []
@@ -189,17 +234,17 @@ async def get_supplier_config():
     return config
 
 
-async def add_category(name: str, tier: str):
-    """Returns the category_id, creating it if it doesn't already exist under this tier."""
-    existing = await categories_col.find_one({"name": name, "tier": tier})
+async def add_category(name: str, tier_id: int):
+    """Returns the category_id, creating it if it doesn't already exist under this type."""
+    existing = await categories_col.find_one({"name": name, "tier_id": tier_id})
     if existing:
         return existing["category_id"]
 
     cat_id = await get_next_sequence("category_id")
     try:
-        await categories_col.insert_one({"category_id": cat_id, "name": name, "tier": tier})
+        await categories_col.insert_one({"category_id": cat_id, "name": name, "tier_id": tier_id})
     except DuplicateKeyError:
-        existing = await categories_col.find_one({"name": name, "tier": tier})
+        existing = await categories_col.find_one({"name": name, "tier_id": tier_id})
         return existing["category_id"] if existing else None
     return cat_id
 
