@@ -12,7 +12,6 @@ accounts_col = db["accounts"]
 users_col = db["users"]
 payments_col = db["payments"]
 counters_col = db["counters"]
-promo_col = db["promo_codes"]
 supplier_col = db["supplier_config"]
 gp_requests_col = db["gp_requests"]
 gp_codes_col = db["gp_codes"]
@@ -33,7 +32,6 @@ async def init_db():
     await categories_col.create_index("name", unique=True)
     await accounts_col.create_index("account_id", unique=True)
     await users_col.create_index("user_id", unique=True)
-    await promo_col.create_index("code", unique=True)
 
 
 async def get_user(user_id: int):
@@ -161,31 +159,6 @@ async def get_all_user_ids():
     cursor = users_col.find({}, {"user_id": 1})
     users = await cursor.to_list(length=None)
     return [doc["user_id"] for doc in users]
-
-
-async def add_promo_code(code: str, discount_amount: float):
-    await promo_col.update_one(
-        {"code": code},
-        {"$set": {"discount": discount_amount}},
-        upsert=True
-    )
-
-
-async def use_promo_code(user_id: int, code: str):
-    promo = await promo_col.find_one({"code": code})
-    if not promo:
-        return False, "Invalid promo code."
-
-    await get_user(user_id)
-    discount = promo["discount"]
-    # atomic: sirf tab update hoga jab user ne ye code pehle use nahi kiya
-    res = await users_col.update_one(
-        {"user_id": user_id, "used_promo_codes": {"$ne": code}},
-        {"$inc": {"balance": discount}, "$push": {"used_promo_codes": code}},
-    )
-    if res.modified_count == 0:
-        return False, "You have already used this promo code."
-    return True, f"Successfully redeemed! ₹{discount} added to your balance."
 
 
 async def set_supplier_config(api_url: str, api_key: str, is_active: bool):

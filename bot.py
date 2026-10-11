@@ -42,7 +42,7 @@ When you use this bot, we store:
 - Your Telegram user ID
 - Your wallet balance
 - Your payment and purchase history
-- Promo codes you have redeemed and referral information
+- Referral information
 
 We do not collect your phone number, real name, or any card or payment details. Payments made with Telegram Stars are processed entirely by Telegram.
 
@@ -125,9 +125,6 @@ class BroadcastState(StatesGroup):
 class BanUserState(StatesGroup):
     waiting_for_user_id = State()
 
-class PromoCodeState(StatesGroup):
-    waiting_for_code = State()
-
 class SupplierConfigState(StatesGroup):
     waiting_for_url = State()
     waiting_for_key = State()
@@ -144,10 +141,6 @@ class DepositState(StatesGroup):
 class StarsTopupState(StatesGroup):
     waiting_for_amount = State()
 
-class CreatePromoState(StatesGroup):
-    waiting_for_code_name = State()
-    waiting_for_code_amount = State()
-
 
 def mask_phone_number(phone: str) -> str:
     if len(phone) > 8:
@@ -159,7 +152,6 @@ async def set_bot_commands(bot_instance: Bot):
         BotCommand(command="start", description="Start the bot 🚀"),
         BotCommand(command="wallet", description="Open your wallet 💰"),
         BotCommand(command="myorders", description="View your purchase history 📦"),
-        BotCommand(command="promo", description="Redeem promo code 🎁"),
         BotCommand(command="referral", description="Invite & earn bonus 👥"),
         BotCommand(command="deposit", description="Deposit funds (UPI/Crypto) 💳"),
         BotCommand(command="privacy", description="Privacy Policy & Terms 📜"),
@@ -170,7 +162,6 @@ async def set_bot_commands(bot_instance: Bot):
         BotCommand(command="start", description="Start the bot 🚀"),
         BotCommand(command="wallet", description="Open your wallet 💰"),
         BotCommand(command="myorders", description="View your purchase history 📦"),
-        BotCommand(command="promo", description="Redeem promo code 🎁"),
         BotCommand(command="referral", description="Invite & earn bonus 👥"),
         BotCommand(command="deposit", description="Deposit funds (UPI/Crypto) 💳"),
         BotCommand(command="privacy", description="Privacy Policy & Terms 📜"),
@@ -235,14 +226,13 @@ async def send_main_menu(message_or_callback, note: str = ""):
         ],
         [
             InlineKeyboardButton(text=sc("📦 My Orders"), callback_data="my_orders"),
-            InlineKeyboardButton(text=sc("🎁 Redeem Promo"), callback_data="redeem_promo_menu")
+            InlineKeyboardButton(text=sc("👥 Referral"), callback_data="referral_menu")
         ],
         [
-            InlineKeyboardButton(text=sc("👥 Referral"), callback_data="referral_menu"),
-            InlineKeyboardButton(text=sc("👤 Profile"), callback_data="my_profile")
+            InlineKeyboardButton(text=sc("👤 Profile"), callback_data="my_profile"),
+            InlineKeyboardButton(text=sc("🆘 Support"), callback_data="support")
         ],
         [
-            InlineKeyboardButton(text=sc("🆘 Support"), callback_data="support"),
             InlineKeyboardButton(text=sc("📜 Privacy Policy"), callback_data="privacy_policy")
         ]
     ]
@@ -372,7 +362,7 @@ async def add_funds_menu(callback: types.CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text=sc("🔙 Back"), callback_data="wallet")]
     ]
     await callback.message.edit_text(
-        "➕ **ᴀᴅᴅ ꜰᴜɴᴅꜱ**\n\nChoose a payment method:",
+        "➕ **ᴀᴅᴅ ꜰᴜɴᴅꜱ**\n\nSelect how you'd like to add funds:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
         parse_mode="Markdown"
     )
@@ -912,36 +902,6 @@ async def referral_handler(event: types.Message | types.CallbackQuery):
     else:
         await event.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
 
-@dp.message(Command("promo"))
-@dp.callback_query(F.data == "redeem_promo_menu")
-async def redeem_promo_prompt(event: types.Message | types.CallbackQuery, state: FSMContext = None):
-    if isinstance(event, types.CallbackQuery):
-        if state is None:
-            await event.answer()
-            return
-        await state.set_state(PromoCodeState.waiting_for_code)
-        await event.message.edit_text(
-            "🎁 **ʀᴇᴅᴇᴇᴍ ᴘʀᴏᴍᴏ ᴄᴏᴅᴇ**\n\nPlease send your promo code below:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=sc("❌ Cancel"), callback_data="back_home")]]),
-            parse_mode="Markdown"
-        )
-    else:
-        args = event.text.split()
-        if len(args) == 2:
-            code = args[1]
-            success, msg = await db.use_promo_code(event.from_user.id, code)
-            await event.answer(msg)
-        else:
-            await event.answer("Usage: `/promo YOUR_CODE` or use the menu.", parse_mode="Markdown")
-
-@dp.message(PromoCodeState.waiting_for_code)
-async def process_promo_code(message: types.Message, state: FSMContext):
-    code = (message.text or "").strip()
-    success, msg = await db.use_promo_code(message.from_user.id, code)
-    await state.clear()
-    kb = [[InlineKeyboardButton(text=sc("🔙 Back"), callback_data="back_home")]]
-    await message.answer(msg, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
-
 @dp.callback_query(F.data == "shop")
 async def show_shop(callback: types.CallbackQuery):
     categories = await db.get_categories_with_counts()
@@ -1351,7 +1311,6 @@ async def admin_panel(event: types.Message | types.CallbackQuery):
 
     kb = [
         [InlineKeyboardButton(text=sc("📊 Detailed Analytics & Stats"), callback_data="admin_stats")],
-        [InlineKeyboardButton(text=sc("🎁 Create Promo Code"), callback_data="admin_add_promo_prompt")],
         [InlineKeyboardButton(text=sc("🔗 Supplier API Settings"), callback_data="admin_supplier_menu")],
         [InlineKeyboardButton(text=sc("🩺 Check Account Health"), callback_data="admin_health_check")],
         [InlineKeyboardButton(text=sc("📂 Manage Categories"), callback_data="admin_cats")],
@@ -1385,41 +1344,6 @@ async def admin_stats_handler(callback: types.CallbackQuery):
     )
     kb = [[InlineKeyboardButton(text=sc("🔙 Back"), callback_data="admin_panel")]]
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
-
-@dp.callback_query(F.data == "admin_add_promo_prompt")
-async def admin_add_promo_prompt(callback: types.CallbackQuery, state: FSMContext):
-    if not is_admin(callback.from_user.id):
-        return
-    await state.set_state(CreatePromoState.waiting_for_code_name)
-    await callback.message.edit_text(
-        "🎁 Enter the promo code name (e.g., WELCOME):",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=sc("❌ Cancel"), callback_data="admin_panel")]])
-    )
-
-@dp.message(CreatePromoState.waiting_for_code_name)
-async def get_promo_name(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    await state.update_data(promo_code=message.text.strip())
-    await state.set_state(CreatePromoState.waiting_for_code_amount)
-    await message.answer("💵 Enter the discount/bonus amount in ₹ (e.g., 0.05):")
-
-@dp.message(CreatePromoState.waiting_for_code_amount)
-async def get_promo_amount(message: types.Message, state: FSMContext):
-    if not is_admin(message.from_user.id):
-        return
-    try:
-        amount = float(message.text)
-    except ValueError:
-        await message.answer("❌ Invalid amount. Please enter a valid number:")
-        return
-
-    data = await state.get_data()
-    code = data.get("promo_code")
-    await db.add_promo_code(code, amount)
-    await state.clear()
-    kb = [[InlineKeyboardButton(text=sc("🔙 Back"), callback_data="admin_panel")]]
-    await message.answer(f"✅ Promo code `{code}` created successfully with value `₹{amount}`!", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
 @dp.callback_query(F.data == "admin_supplier_menu")
 async def admin_supplier_menu(callback: types.CallbackQuery):
