@@ -222,7 +222,7 @@ async def send_main_menu(message_or_callback, note: str = ""):
         [InlineKeyboardButton(text=sc("🛒 Buy Now"), callback_data="shop")],
         [
             InlineKeyboardButton(text=sc("💳 Wallet"), callback_data="wallet"),
-            InlineKeyboardButton(text=sc("➕ Deposit"), callback_data="add_funds_deposit")
+            InlineKeyboardButton(text=sc("➕ Deposit"), callback_data="add_funds_menu_home")
         ],
         [
             InlineKeyboardButton(text=sc("📦 My Orders"), callback_data="my_orders"),
@@ -337,7 +337,7 @@ async def show_wallet(event: types.Message | types.CallbackQuery):
             history_text += f"• ₹{p['amount']} | Status: `{p['status']}`\n"
 
     kb = [
-        [InlineKeyboardButton(text=sc("➕ Add Funds"), callback_data="add_funds_menu")],
+        [InlineKeyboardButton(text=sc("➕ Add Funds"), callback_data="add_funds_menu_wallet")],
         [InlineKeyboardButton(text=sc("🔙 Back"), callback_data="back_home")]
     ]
 
@@ -352,20 +352,38 @@ async def show_wallet(event: types.Message | types.CallbackQuery):
     else:
         await event.answer(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
-@dp.callback_query(F.data == "add_funds_menu")
-async def add_funds_menu(callback: types.CallbackQuery, state: FSMContext):
+async def render_add_funds_menu(callback: types.CallbackQuery, state: FSMContext, origin: str = None):
+    """origin is 'wallet' (reached via Wallet) or 'home' (reached via the Main Menu
+    shortcut). If not given, it's read back from state (so Cancel from deeper in
+    the flow still returns to the correct place)."""
+    if origin is None:
+        data = await state.get_data()
+        origin = data.get("funds_origin", "wallet")
+
     await state.clear()
+    await state.update_data(funds_origin=origin)
+
+    back_target = "wallet" if origin == "wallet" else "back_home"
     kb = [
         [InlineKeyboardButton(text=sc("⭐ Telegram Stars"), callback_data="add_funds_stars")],
         [InlineKeyboardButton(text=sc("🎁 Google Play Code"), callback_data="add_funds_gp")],
         [InlineKeyboardButton(text=sc("💳 Deposit (UPI / Crypto)"), callback_data="add_funds_deposit")],
-        [InlineKeyboardButton(text=sc("🔙 Back"), callback_data="wallet")]
+        [InlineKeyboardButton(text=sc("🔙 Back"), callback_data=back_target)]
     ]
     await callback.message.edit_text(
         "➕ **ᴀᴅᴅ ꜰᴜɴᴅꜱ**\n\nSelect how you'd like to add funds:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
         parse_mode="Markdown"
     )
+
+@dp.callback_query(F.data == "add_funds_menu_wallet")
+async def add_funds_menu_from_wallet(callback: types.CallbackQuery, state: FSMContext):
+    await render_add_funds_menu(callback, state, origin="wallet")
+    await callback.answer()
+
+@dp.callback_query(F.data == "add_funds_menu_home")
+async def add_funds_menu_from_home(callback: types.CallbackQuery, state: FSMContext):
+    await render_add_funds_menu(callback, state, origin="home")
     await callback.answer()
 
 @dp.callback_query(F.data == "add_funds_stars")
@@ -459,8 +477,8 @@ def gp_admin_caption(req: dict, status_line: str = "") -> str:
 
 @dp.callback_query(F.data == "cancel_topup")
 async def cancel_topup(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    await add_funds_menu(callback, state)
+    await render_add_funds_menu(callback, state)
+    await callback.answer()
 
 @dp.callback_query(F.data == "add_funds_gp")
 async def add_funds_gp_menu(callback: types.CallbackQuery, state: FSMContext):
