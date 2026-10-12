@@ -221,6 +221,22 @@ async def get_all_sales_history(limit: int = 10):
     return await cursor.to_list(length=limit)
 
 
+async def get_user_management_stats():
+    total_users = await users_col.count_documents({})
+    banned_users = await users_col.count_documents({"is_banned": 1})
+    verified_users = await users_col.count_documents({"is_verified": 1})
+    return {
+        "total": total_users,
+        "banned": banned_users,
+        "verified": verified_users,
+    }
+
+
+async def get_banned_users(limit: int = 10, skip: int = 0):
+    cursor = users_col.find({"is_banned": 1}, {"user_id": 1}).skip(skip).limit(limit)
+    return [doc["user_id"] async for doc in cursor]
+
+
 async def get_all_user_ids():
     cursor = users_col.find({}, {"user_id": 1})
     users = await cursor.to_list(length=None)
@@ -257,7 +273,7 @@ async def add_category(name: str, tier_id: int):
     return cat_id
 
 
-async def add_account(category_id: int, display_name: str, phone_number: str, session_string: str, price: float, two_step: str = "", telegram_user_id=None, two_step_enabled: bool = False):
+async def add_account(category_id: int, display_name: str, phone_number: str, session_string: str, price: float, two_step: str = "", telegram_user_id=None, two_step_enabled: bool = False, telegram_username=None):
     acc_id = await get_next_sequence("account_id")
     await accounts_col.insert_one({
         "account_id": acc_id,
@@ -269,6 +285,7 @@ async def add_account(category_id: int, display_name: str, phone_number: str, se
         "two_step": two_step,
         "two_step_enabled": two_step_enabled,
         "telegram_user_id": telegram_user_id,
+        "telegram_username": telegram_username,
         "is_sold": 0,
     })
 
@@ -283,10 +300,12 @@ async def get_account_by_id(account_id: int):
 
 
 async def buy_account_safely(user_id: int, account_id: int):
+    """Returns (status, claimed_account_dict_or_None).
+    status is one of: "success", "low_balance", "not_found"."""
     await get_user(user_id)
     account = await accounts_col.find_one({"account_id": account_id, "is_sold": 0})
     if not account:
-        return "not_found", None, None, None, None, None, None
+        return "not_found", None
 
     price = account["price"]
     deducted = await users_col.update_one(
@@ -294,27 +313,35 @@ async def buy_account_safely(user_id: int, account_id: int):
         {"$inc": {"balance": -price}},
     )
     if deducted.modified_count == 0:
-        return "low_balance", None, None, None, None, None, None
+        return "low_balance", None
 
     claimed = await accounts_col.find_one_and_update(
         {"account_id": account_id, "is_sold": 0},
-        {"$set": {"is_sold": 1, "sold_to": user_id}},
+        {"$set": {"is_sold": 1, "sold_to": user_id, "sold_at": datetime.now(timezone.utc)}},
         return_document=ReturnDocument.AFTER,
     )
     if not claimed:
         await users_col.update_one({"user_id": user_id}, {"$inc": {"balance": price}})
-        return "not_found", None, None, None, None, None, None
+        return "not_found", None
 
     await save_payment_record(user_id, price, "INR", "SPEND_BUY_ACCOUNT")
-    return (
-        "success",
-        claimed["phone_number"],
-        claimed["session_string"],
-        claimed["price"],
-        claimed.get("two_step", ""),
-        claimed.get("telegram_user_id"),
-        claimed.get("two_step_enabled", False),
-    )
+    return "success", claimed
+
+
+# ---------------- OTP delivery logs ----------------
+
+async def log_otp_delivery(account_id: int, phone_number: str):
+    """Records one OTP delivery and returns the delivery count so far (including this one)."""
+    await otp_logs_col.insert_one({
+        "account_id": account_id,
+        "phone_number": phone_number,
+        "timestamp": datetime.now(timezone.utc),
+    })
+    return await otp_logs_col.count_documents({"account_id": account_id})
+
+
+async def get_otp_delivery_count(account_id: int):
+    return await otp_logs_col.count_documents({"account_id": account_id})
 
 
 async def get_accounts_by_category_full(category_id: int):

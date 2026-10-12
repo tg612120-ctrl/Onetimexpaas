@@ -1338,8 +1338,16 @@ async def privacy_policy_handler(event: types.Message | types.CallbackQuery):
 
 @dp.callback_query(F.data == "support")
 async def support_handler(callback: types.CallbackQuery):
-    kb = [[InlineKeyboardButton(text=sc("🔙 Back"), callback_data="back_home")]]
-    await callback.message.edit_text("🆘 **ꜱᴜᴘᴘᴏʀᴛ:**\n\nFor any issues or questions, please contact the owner.", parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    kb = [
+        [InlineKeyboardButton(text=sc("👤 Owner"), url="https://t.me/izoph")],
+        [InlineKeyboardButton(text=sc("👥 Support Group"), url="https://t.me/genzportals")],
+        [InlineKeyboardButton(text=sc("🔙 Back"), callback_data="back_home")]
+    ]
+    await callback.message.edit_text(
+        sc("🆘 **Support:**") + "\n\nFor any issues or questions, reach out below:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb)
+    )
 
 @dp.callback_query(F.data == "my_profile")
 async def my_profile_handler(callback: types.CallbackQuery):
@@ -1364,16 +1372,26 @@ async def admin_panel(event: types.Message | types.CallbackQuery):
         return
 
     kb = [
-        [InlineKeyboardButton(text=sc("📊 Detailed Analytics & Stats"), callback_data="admin_stats")],
-        [InlineKeyboardButton(text=sc("🔗 Supplier API Settings"), callback_data="admin_supplier_menu")],
-        [InlineKeyboardButton(text=sc("🩺 Check Account Health"), callback_data="admin_health_check")],
-        [InlineKeyboardButton(text=sc("📂 Manage Categories"), callback_data="admin_cats")],
-        [InlineKeyboardButton(text=sc("➕ Add Account"), callback_data="admin_add_acc")],
-        [InlineKeyboardButton(text=sc("ℹ️ Info"), callback_data="admin_info")],
-        [InlineKeyboardButton(text=sc("🗑️ Delete Stock"), callback_data="admin_del_acc_list")],
-        [InlineKeyboardButton(text=sc("📦 Sales History"), callback_data="admin_sales_history")],
-        [InlineKeyboardButton(text=sc("👥 User Management"), callback_data="admin_users")],
-        [InlineKeyboardButton(text=sc("📢 Broadcast"), callback_data="admin_broadcast")],
+        [
+            InlineKeyboardButton(text=sc("➕ Add Account"), callback_data="admin_add_acc"),
+            InlineKeyboardButton(text=sc("📂 Manage Categories"), callback_data="admin_cats")
+        ],
+        [
+            InlineKeyboardButton(text=sc("ℹ️ Info"), callback_data="admin_info"),
+            InlineKeyboardButton(text=sc("🗑️ Delete Stock"), callback_data="admin_del_acc_list")
+        ],
+        [
+            InlineKeyboardButton(text=sc("📊 Analytics & Stats"), callback_data="admin_stats"),
+            InlineKeyboardButton(text=sc("📦 Sales History"), callback_data="admin_sales_history")
+        ],
+        [
+            InlineKeyboardButton(text=sc("👥 User Management"), callback_data="admin_users"),
+            InlineKeyboardButton(text=sc("📢 Broadcast"), callback_data="admin_broadcast")
+        ],
+        [
+            InlineKeyboardButton(text=sc("🔗 Supplier API"), callback_data="admin_supplier_menu"),
+            InlineKeyboardButton(text=sc("🩺 Account Health"), callback_data="admin_health_check")
+        ],
         [InlineKeyboardButton(text=sc("🔙 Main Menu"), callback_data="back_home")]
     ]
     markup = InlineKeyboardMarkup(inline_keyboard=kb)
@@ -1675,12 +1693,59 @@ async def save_edited_category(message: types.Message, state: FSMContext):
 async def admin_users_handler(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
         return
+    stats = await db.get_user_management_stats()
+
+    text = (
+        sc("👥 **User Management**") + "\n\n"
+        f"👤 Total Users: **{stats['total']}**\n"
+        f"✅ Verified: **{stats['verified']}**\n"
+        f"🚫 Banned: **{stats['banned']}**"
+    )
     kb = [
         [InlineKeyboardButton(text=sc("🚫 Ban a User"), callback_data="admin_ban_user")],
         [InlineKeyboardButton(text=sc("✅ Unban a User"), callback_data="admin_unban_user")],
+        [InlineKeyboardButton(text=sc("📋 View Banned Users"), callback_data="admin_banned_list_0")],
         [InlineKeyboardButton(text=sc("🔙 Back"), callback_data="admin_panel")]
     ]
-    await callback.message.edit_text("👥 **ᴜꜱᴇʀ ᴍᴀɴᴀɢᴇᴍᴇɴᴛ:**", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+
+ADMIN_BANNED_PAGE_SIZE = 10
+
+@dp.callback_query(F.data.startswith("admin_banned_list_"))
+async def admin_banned_list(callback: types.CallbackQuery):
+    if not is_admin(callback.from_user.id):
+        return
+    page = int(callback.data.rsplit("_", 1)[1])
+    stats = await db.get_user_management_stats()
+    total_banned = stats["banned"]
+
+    if total_banned == 0:
+        await callback.message.edit_text(
+            sc("📋 **Banned Users**") + "\n\nNo banned users right now.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=sc("🔙 Back"), callback_data="admin_users")]]),
+            parse_mode="Markdown"
+        )
+        return
+
+    total_pages = (total_banned + ADMIN_BANNED_PAGE_SIZE - 1) // ADMIN_BANNED_PAGE_SIZE
+    page = max(0, min(page, total_pages - 1))
+    banned_ids = await db.get_banned_users(limit=ADMIN_BANNED_PAGE_SIZE, skip=page * ADMIN_BANNED_PAGE_SIZE)
+
+    lines = [sc(f"📋 **Banned Users (Page {page + 1}/{total_pages})**"), ""]
+    lines += [f"{page * ADMIN_BANNED_PAGE_SIZE + i}. `{uid}`" for i, uid in enumerate(banned_ids, start=1)]
+
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton(text=sc("⬅️ Prev"), callback_data=f"admin_banned_list_{page - 1}"))
+    if page < total_pages - 1:
+        nav_row.append(InlineKeyboardButton(text=sc("Next ➡️"), callback_data=f"admin_banned_list_{page + 1}"))
+
+    kb_rows = []
+    if nav_row:
+        kb_rows.append(nav_row)
+    kb_rows.append([InlineKeyboardButton(text=sc("🔙 Back"), callback_data="admin_users")])
+
+    await callback.message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows), parse_mode="Markdown")
 
 @dp.callback_query(F.data == "admin_ban_user")
 async def admin_ban_user_prompt(callback: types.CallbackQuery, state: FSMContext):
@@ -1723,16 +1788,22 @@ async def execute_ban_user(message: types.Message, state: FSMContext):
 async def admin_sales_history(callback: types.CallbackQuery):
     if not is_admin(callback.from_user.id):
         return
-    sales = await db.get_all_sales_history(limit=10)
-    text = "📦 **ʀᴇᴄᴇɴᴛ ꜱᴀʟᴇꜱ ʟᴏɢꜱ:**\n\n"
+    sales = await db.get_all_sales_history(limit=15)
+
+    lines = [sc("📦 **Recent Sales:**"), ""]
     if not sales:
-        text += "No sales records found."
+        lines.append("No sales records found yet.")
     else:
-        for s in sales:
-            text += f"• User: `{s['user_id']}` | Amount: `₹{s['amount']}` | Date: `{s['timestamp']}`\n"
+        total = sum(s.get("amount", 0) for s in sales)
+        for idx, s in enumerate(sales, start=1):
+            ts = s.get("timestamp")
+            date_str = ts.strftime("%d %b, %I:%M %p") if ts else "Unknown"
+            lines.append(f"{idx}. ₹{s['amount']:.2f} — user `{s['user_id']}`\n    🕐 {date_str}")
+        lines.append("")
+        lines.append(f"**Total (last {len(sales)}):** ₹{total:.2f}")
 
     kb = [[InlineKeyboardButton(text=sc("🔙 Back"), callback_data="admin_panel")]]
-    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
+    await callback.message.edit_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
 
 @dp.callback_query(F.data == "admin_broadcast")
 async def admin_broadcast_prompt(callback: types.CallbackQuery, state: FSMContext):
