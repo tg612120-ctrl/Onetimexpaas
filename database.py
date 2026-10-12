@@ -165,13 +165,21 @@ async def get_categories_with_counts(tier_id: int = None):
     query = {"tier_id": tier_id} if tier_id is not None else {}
     cursor = categories_col.find(query)
     categories = await cursor.to_list(length=None)
-    result = []
-    for cat in categories:
-        cat_id = cat["category_id"]
-        cat_name = cat["name"]
-        available_count = await accounts_col.count_documents({"category_id": cat_id, "is_sold": 0})
-        result.append((cat_id, cat_name, available_count))
-    return result
+    if not categories:
+        return []
+
+    cat_ids = [cat["category_id"] for cat in categories]
+
+    # one aggregation instead of one count_documents() call per category
+    pipeline = [
+        {"$match": {"category_id": {"$in": cat_ids}, "is_sold": 0}},
+        {"$group": {"_id": "$category_id", "count": {"$sum": 1}}},
+    ]
+    counts = {}
+    async for row in accounts_col.aggregate(pipeline):
+        counts[row["_id"]] = row["count"]
+
+    return [(cat["category_id"], cat["name"], counts.get(cat["category_id"], 0)) for cat in categories]
 
 
 async def get_category_by_id(cat_id: int):

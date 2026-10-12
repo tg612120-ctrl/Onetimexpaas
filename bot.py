@@ -192,11 +192,12 @@ async def check_user_channels(user_id: int) -> bool:
 
 BOT_DISPLAY_NAME = "Tg Otp Store Bot"
 
-async def send_main_menu(message_or_callback, note: str = ""):
+async def send_main_menu(message_or_callback, note: str = "", user_data: dict = None):
     user_id = message_or_callback.from_user.id
     first_name = message_or_callback.from_user.first_name or "there"
 
-    user_data = await db.get_user(user_id)
+    if user_data is None:
+        user_data = await db.get_user(user_id)
     if user_data and user_data.get('is_banned', 0) == 1:
         if isinstance(message_or_callback, types.CallbackQuery):
             await message_or_callback.answer("❌ You are banned from using this bot.", show_alert=True)
@@ -252,21 +253,21 @@ async def send_main_menu(message_or_callback, note: str = ""):
 async def cmd_start(message: types.Message):
     user_id = message.from_user.id
 
+    user_data = await db.get_user(user_id)
+
     args = message.text.split()
     if len(args) > 1 and args[1].startswith("ref_"):
         try:
             referrer_id = int(args[1].split("_")[1])
-            if referrer_id != user_id:
-                user_record = await db.get_user(user_id)
-                if user_record.get("referred_by") is None:
-                    await db.users_col.update_one(
-                        {"user_id": user_id},
-                        {"$set": {"referred_by": referrer_id, "referral_rewarded": 0}}
-                    )
+            if referrer_id != user_id and user_data.get("referred_by") is None:
+                await db.users_col.update_one(
+                    {"user_id": user_id},
+                    {"$set": {"referred_by": referrer_id, "referral_rewarded": 0}}
+                )
+                user_data["referred_by"] = referrer_id
         except Exception:
             pass
 
-    user_data = await db.get_user(user_id)
     if user_data and user_data.get('is_banned', 0) == 1:
         await message.answer("❌ You are banned from using this bot.")
         return
@@ -274,7 +275,7 @@ async def cmd_start(message: types.Message):
     if user_data["is_verified"] == 1:
         still_member = await check_user_channels(user_id)
         if still_member:
-            await send_main_menu(message, "✅ Welcome back!")
+            await send_main_menu(message, "✅ Welcome back!", user_data=user_data)
             return
         else:
             await db.update_verification(user_id, 0)
