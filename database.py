@@ -353,6 +353,11 @@ async def get_accounts_by_category_full(category_id: int):
     return await cursor.to_list(length=None)
 
 
+async def get_all_accounts_with_sessions():
+    cursor = accounts_col.find({}, {"account_id": 1, "phone_number": 1, "session_string": 1})
+    return await cursor.to_list(length=None)
+
+
 async def get_all_unsold_accounts():
     cursor = accounts_col.find({"is_sold": 0})
     return [(doc["account_id"], doc.get("display_name", doc["phone_number"]), doc["price"]) async for doc in cursor]

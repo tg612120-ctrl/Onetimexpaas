@@ -5,6 +5,7 @@ import re
 import os
 import shutil
 import tempfile
+import random
 from datetime import datetime, timezone
 from aiogram import Bot, Dispatcher, F, types, BaseMiddleware
 from aiogram.filters import Command
@@ -14,7 +15,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 
 from config import BOT_TOKEN, OWNER_ID, REQUIRED_CHANNELS
 import database as db
-from userbot import start_userbot_for_account, active_clients, extract_account_info, get_devices, terminate_device, process_uploaded_session, terminate_bot_session
+from userbot import start_userbot_for_account, active_clients, extract_account_info, get_devices, terminate_device, process_uploaded_session, terminate_bot_session, join_channel_with_session
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
@@ -174,6 +175,7 @@ async def set_bot_commands(bot_instance: Bot):
         BotCommand(command="admin", description="Open Admin Panel ⚙"),
         BotCommand(command="add", description="Add new account ➕"),
         BotCommand(command="groupid", description="Get this chat's ID 🆔"),
+        BotCommand(command="join", description="Join all accounts to a channel 📢"),
         BotCommand(command="dd", description="Add balance to a user 💰"),
         BotCommand(command="ss", description="Deduct balance from a user 💸"),
     ]
@@ -2160,6 +2162,59 @@ async def finalize_add_account(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text=sc("🔙 Back"), callback_data="admin_panel")]
     ]
     await message.answer("✅ Account added successfully!", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+JOIN_DELAY_MIN = 3   # seconds between each account's join attempt
+JOIN_DELAY_MAX = 7
+
+async def run_mass_join(target: str, accounts: list, admin_chat_id: int):
+    success = 0
+    failed = 0
+    fail_reasons = {}
+
+    for acc in accounts:
+        ok, reason = await join_channel_with_session(acc["phone_number"], acc["session_string"], target)
+        if ok:
+            success += 1
+        else:
+            failed += 1
+            fail_reasons[reason] = fail_reasons.get(reason, 0) + 1
+        await asyncio.sleep(random.uniform(JOIN_DELAY_MIN, JOIN_DELAY_MAX))
+
+    lines = [f"✅ **Mass-join finished** for: `{target}`", "", f"✅ Joined: {success}", f"❌ Failed: {failed}"]
+    if fail_reasons:
+        lines.append("")
+        lines.append("**Failure breakdown:**")
+        for reason, count in fail_reasons.items():
+            lines.append(f"• {reason}: {count}")
+
+    try:
+        await bot.send_message(admin_chat_id, "\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        print(f"Mass-join summary send error: {e}")
+
+@dp.message(Command("join"))
+async def cmd_join_channel(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return
+    args = message.text.split(maxsplit=1)
+    if len(args) != 2:
+        await message.answer("Usage: `/join <channel_username_or_link>`\nExample: `/join @patricktesting`", parse_mode="Markdown")
+        return
+
+    target = args[1].strip()
+    accounts = await db.get_all_accounts_with_sessions()
+    if not accounts:
+        await message.answer("❌ No accounts found in the database.")
+        return
+
+    est_minutes = round(len(accounts) * ((JOIN_DELAY_MIN + JOIN_DELAY_MAX) / 2) / 60, 1)
+    await message.answer(
+        f"🚀 Starting mass-join for **{len(accounts)}** accounts into `{target}`.\n"
+        f"Estimated time: ~{est_minutes} minutes (running with a delay between each account).\n"
+        f"I'll send a summary here once it's done.",
+        parse_mode="Markdown"
+    )
+    asyncio.create_task(run_mass_join(target, accounts, message.chat.id))
 
 @dp.message(Command("dd"))
 async def cmd_add_balance(message: types.Message):

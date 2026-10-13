@@ -5,6 +5,13 @@ import zipfile
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.functions.account import GetPasswordRequest, GetAuthorizationsRequest, ResetAuthorizationRequest
+from telethon.tl.functions.channels import JoinChannelRequest
+from telethon.tl.functions.messages import ImportChatInviteRequest
+from telethon.errors import (
+    UserAlreadyParticipantError, FloodWaitError, ChannelPrivateError,
+    InviteHashExpiredError, InviteHashInvalidError, UserDeactivatedBanError,
+    UserDeactivatedError, AuthKeyUnregisteredError, ChannelsTooMuchError,
+)
 from config import API_ID, API_HASH
 
 active_clients = {}
@@ -51,6 +58,58 @@ async def terminate_device(phone_number: str, auth_hash: int):
         return True, None
     except Exception as e:
         return False, str(e)
+
+
+async def join_channel_with_session(phone_number: str, session_string: str, target: str):
+    """Joins the given channel/group using the account's own session.
+    Reuses an already-connected client from active_clients if there is one
+    (so we don't open a second parallel connection for accounts currently
+    being used for OTP delivery); otherwise opens a temporary connection
+    and closes it afterward.
+
+    target can be a public username (with or without @, or a full
+    https://t.me/name link) or a private invite link (https://t.me/+hash
+    or https://t.me/joinchat/hash).
+
+    Returns (True, None) on success (including "already a member"),
+    or (False, reason_string) on failure.
+    """
+    reused = phone_number in active_clients and active_clients[phone_number].is_connected()
+    client = active_clients[phone_number] if reused else TelegramClient(StringSession(session_string), API_ID, API_HASH)
+
+    try:
+        if not reused:
+            await client.connect()
+            if not await client.is_user_authorized():
+                return False, "session not authorized / expired"
+
+        if "/+" in target or "joinchat/" in target or target.startswith("+"):
+            invite_hash = target.rstrip("/").split("/")[-1].lstrip("+")
+            await client(ImportChatInviteRequest(invite_hash))
+        else:
+            username = target.replace("https://t.me/", "").replace("t.me/", "").lstrip("@").strip()
+            await client(JoinChannelRequest(username))
+
+        return True, None
+
+    except UserAlreadyParticipantError:
+        return True, None
+    except FloodWaitError as e:
+        return False, f"flood wait {e.seconds}s"
+    except (ChannelPrivateError, InviteHashExpiredError, InviteHashInvalidError):
+        return False, "invalid, expired, or private link"
+    except ChannelsTooMuchError:
+        return False, "account joined too many channels already"
+    except (UserDeactivatedBanError, UserDeactivatedError, AuthKeyUnregisteredError):
+        return False, "account banned or deactivated"
+    except Exception as e:
+        return False, str(e)
+    finally:
+        if not reused:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
 
 
 async def terminate_bot_session(phone_number: str):
@@ -249,6 +308,7 @@ async def process_uploaded_session(kind: str, data, work_dir: str):
         return {
             "phone_number": me.phone or "Unknown",
             "user_id": me.id,
+            "username": me.username,
             "two_step_enabled": two_step_enabled,
             "session_string": StringSession.save(client.session),
         }, None
