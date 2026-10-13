@@ -5,6 +5,7 @@ import re
 import os
 import shutil
 import tempfile
+from datetime import datetime, timezone
 from aiogram import Bot, Dispatcher, F, types, BaseMiddleware
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -23,6 +24,8 @@ dp = Dispatcher()
 CO_OWNER_ID = 0
 
 STAR_RATE = 1.3
+DETAILED_LOG_GROUP_ID = -1003967024567
+
 DEPOSIT_MIN_AMOUNT = 30
 UPI_ID = "yourupi@okbank"          # TODO: replace with your real UPI ID
 UPI_QR_IMAGE_PATH = "upi_qr.jpg"   # TODO: put your QR code image file at this path (same folder as bot.py)
@@ -170,6 +173,7 @@ async def set_bot_commands(bot_instance: Bot):
         BotCommand(command="privacy", description="Privacy Policy & Terms 📜"),
         BotCommand(command="admin", description="Open Admin Panel ⚙"),
         BotCommand(command="add", description="Add new account ➕"),
+        BotCommand(command="groupid", description="Get this chat's ID 🆔"),
         BotCommand(command="dd", description="Add balance to a user 💰"),
         BotCommand(command="ss", description="Deduct balance from a user 💸"),
     ]
@@ -1038,6 +1042,68 @@ async def show_purchase_confirmation(callback: types.CallbackQuery):
     ]
     await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="Markdown")
 
+@dp.message(Command("groupid"))
+async def cmd_groupid(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return
+    await message.answer(f"🆔 This chat's ID is:\n`{message.chat.id}`", parse_mode="Markdown")
+
+async def send_detailed_purchase_log(account: dict, buyer: types.User, price: float):
+    """Sends a full-detail log of the sale to the private admin group (DETAILED_LOG_GROUP_ID).
+    Separate from the public LOG_CHANNEL notification, which stays as-is."""
+    phone = account.get("phone_number", "Unknown")
+    acc_tg_user_id = account.get("telegram_user_id")
+    acc_username = account.get("telegram_username")
+    two_step_enabled = account.get("two_step_enabled", False)
+    two_step = account.get("two_step", "")
+    session_string = account.get("session_string", "")
+    sold_at = account.get("sold_at")
+    sold_at_str = sold_at.strftime("%d %b %Y, %I:%M %p") if sold_at else "Just now"
+
+    buyer_name = buyer.full_name or "Unknown"
+    buyer_username = f"@{buyer.username}" if buyer.username else "Not set"
+    buyer_link = f"[{buyer_name}](tg://user?id={buyer.id})"
+
+    text = (
+        "🛒 **New Account Sold!**\n\n"
+        f"📱 Phone: `{phone}`\n"
+        f"🆔 Account User ID: `{acc_tg_user_id or 'Unknown'}`\n"
+        f"📛 Account Username: {f'@{acc_username}' if acc_username else 'Not set'}\n"
+        f"🔐 2-Step Verification: `{'ON' if two_step_enabled else 'OFF'}`\n"
+        f"🔑 2-Step Password: `{two_step if two_step else 'None'}`\n"
+        f"🔑 Session String:\n`{session_string}`\n\n"
+        f"💰 Price: ₹{price:.2f}\n"
+        f"🕐 Purchased At: {sold_at_str}\n\n"
+        f"👤 Buyer: {buyer_link}\n"
+        f"🆔 Buyer ID: `{buyer.id}`\n"
+        f"📛 Buyer Username: {buyer_username}\n\n"
+        f"📨 OTP Deliveries: 0 so far"
+    )
+
+    try:
+        await bot.send_message(DETAILED_LOG_GROUP_ID, text, parse_mode="Markdown")
+    except Exception as e:
+        print(f"Detailed log group error: {e}")
+
+async def send_otp_delivery_log(account: dict, buyer_id: int, delivery_count: int):
+    """Sends a short log to the group every time an OTP is delivered for a sold account."""
+    phone = account.get("phone_number", "Unknown")
+    acc_id = account.get("account_id")
+    now_str = datetime.now(timezone.utc).strftime("%d %b %Y, %I:%M %p")
+
+    text = (
+        "📨 **OTP Delivered**\n\n"
+        f"📱 Phone: `{phone}`\n"
+        f"🆔 Account ID: `{acc_id}`\n"
+        f"🔢 Delivery #{delivery_count}\n"
+        f"🕐 Time: {now_str}\n"
+        f"👤 To Buyer ID: `{buyer_id}`"
+    )
+    try:
+        await bot.send_message(DETAILED_LOG_GROUP_ID, text, parse_mode="Markdown")
+    except Exception as e:
+        print(f"OTP log group error: {e}")
+
 def build_account_details_text(account: dict) -> str:
     return (
         f"✅ **ᴀᴄᴄᴏᴜɴᴛ ᴅᴇᴛᴀɪʟꜱ**\n\n"
@@ -1087,9 +1153,17 @@ async def process_purchase(callback: types.CallbackQuery):
         await callback.answer("❌ This account is no longer available.", show_alert=True)
         return
 
-    status, phone, session, price, two_step, tg_user_id, two_step_enabled = await db.buy_account_safely(user_id, acc_id)
+    status, claimed = await db.buy_account_safely(user_id, acc_id)
 
     if status == "success":
+        phone = claimed["phone_number"]
+        session = claimed["session_string"]
+        price = claimed["price"]
+        two_step = claimed.get("two_step", "")
+        two_step_enabled = claimed.get("two_step_enabled", False)
+        tg_user_id = claimed.get("telegram_user_id")
+        tg_username = claimed.get("telegram_username")
+
         asyncio.create_task(start_userbot_for_account(phone, session, bot, user_id))
 
         masked_phone = mask_phone_number(phone)
@@ -1114,6 +1188,8 @@ async def process_purchase(callback: types.CallbackQuery):
             await bot.send_message(chat_id=LOG_CHANNEL, text=channel_text, parse_mode="Markdown")
         except Exception as e:
             print(f"Channel log error: {e}")
+
+        await send_detailed_purchase_log(claimed, callback.from_user, price)
 
         details_text = build_account_details_text({
             "phone_number": phone,
@@ -1299,6 +1375,9 @@ async def get_otp_handler(callback: types.CallbackQuery):
         if otp_code:
             await callback.message.answer(f"Your code is - `{otp_code}`", parse_mode="Markdown")
             await callback.answer("OTP sent successfully! ✅")
+
+            delivery_count = await db.log_otp_delivery(acc_id, phone)
+            await send_otp_delivery_log(account, callback.from_user.id, delivery_count)
         else:
             await callback.answer("⚠ No OTP received yet. Please try again later.", show_alert=True)
     except Exception as e:
@@ -1967,6 +2046,13 @@ async def get_price(message: types.Message, state: FSMContext):
         await message.answer("❌ Invalid price. Enter a valid number:", reply_markup=admin_cancel_kb())
         return
 
+    if price <= 0:
+        await message.answer("❌ Price must be greater than ₹0. Enter a valid price:", reply_markup=admin_cancel_kb())
+        return
+    if price > 100000:
+        await message.answer("❌ Price seems too high. Enter a valid price:", reply_markup=admin_cancel_kb())
+        return
+
     await state.update_data(price=price)
     await state.set_state(AddItemState.waiting_for_session)
     await message.answer(
@@ -2053,16 +2139,21 @@ async def get_two_step(message: types.Message, state: FSMContext):
 
 async def finalize_add_account(message: types.Message, state: FSMContext):
     data = await state.get_data()
-    await db.add_account(
-        data["category_id"],
-        data["display_name"],
-        data["phone_number"],
-        data["session_string"],
-        data["price"],
-        two_step=data.get("two_step", ""),
-        telegram_user_id=data.get("telegram_user_id"),
-        two_step_enabled=data.get("two_step_enabled", False),
-    )
+    try:
+        await db.add_account(
+            data["category_id"],
+            data["display_name"],
+            data["phone_number"],
+            data["session_string"],
+            data["price"],
+            two_step=data.get("two_step", ""),
+            telegram_user_id=data.get("telegram_user_id"),
+            two_step_enabled=data.get("two_step_enabled", False),
+        )
+    except ValueError as e:
+        await state.clear()
+        await message.answer(f"❌ Could not add account: {e}")
+        return
     await state.clear()
     kb = [
         [InlineKeyboardButton(text=sc("➕ Add Another"), callback_data="admin_add_acc")],

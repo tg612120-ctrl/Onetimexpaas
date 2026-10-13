@@ -17,6 +17,7 @@ supplier_col = db["supplier_config"]
 gp_requests_col = db["gp_requests"]
 gp_codes_col = db["gp_codes"]
 deposit_requests_col = db["deposit_requests"]
+otp_logs_col = db["otp_logs"]
 
 
 async def get_next_sequence(name: str) -> int:
@@ -274,6 +275,9 @@ async def add_category(name: str, tier_id: int):
 
 
 async def add_account(category_id: int, display_name: str, phone_number: str, session_string: str, price: float, two_step: str = "", telegram_user_id=None, two_step_enabled: bool = False, telegram_username=None):
+    if price is None or price <= 0:
+        raise ValueError("price must be greater than 0")
+
     acc_id = await get_next_sequence("account_id")
     await accounts_col.insert_one({
         "account_id": acc_id,
