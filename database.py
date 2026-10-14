@@ -18,6 +18,7 @@ gp_requests_col = db["gp_requests"]
 gp_codes_col = db["gp_codes"]
 deposit_requests_col = db["deposit_requests"]
 otp_logs_col = db["otp_logs"]
+joined_channels_col = db["joined_channels"]
 
 
 async def get_next_sequence(name: str) -> int:
@@ -354,8 +355,38 @@ async def get_accounts_by_category_full(category_id: int):
 
 
 async def get_all_accounts_with_sessions():
-    cursor = accounts_col.find({}, {"account_id": 1, "phone_number": 1, "session_string": 1})
+    cursor = accounts_col.find(
+        {"session_string": {"$nin": [None, ""]}},
+        {"account_id": 1, "phone_number": 1, "session_string": 1}
+    )
     return await cursor.to_list(length=None)
+
+
+async def get_unjoined_accounts(target: str):
+    """Accounts that have NOT already successfully joined this exact target."""
+    joined_ids = set()
+    async for doc in joined_channels_col.find({"target": target}, {"account_id": 1}):
+        joined_ids.add(doc["account_id"])
+
+    all_accounts = await get_all_accounts_with_sessions()
+    return [a for a in all_accounts if a["account_id"] not in joined_ids]
+
+
+async def mark_joined(account_id: int, target: str):
+    await joined_channels_col.update_one(
+        {"account_id": account_id, "target": target},
+        {"$set": {"joined_at": datetime.now(timezone.utc)}},
+        upsert=True
+    )
+
+
+async def clear_account_session(account_id: int):
+    """Removes the session string after the bot's own session has been
+    logged out, so the DB no longer holds a live credential for it."""
+    await accounts_col.update_one(
+        {"account_id": account_id},
+        {"$set": {"session_string": "", "session_revoked": True, "session_revoked_at": datetime.now(timezone.utc)}}
+    )
 
 
 async def get_all_unsold_accounts():

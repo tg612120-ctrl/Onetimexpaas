@@ -15,7 +15,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 
 from config import BOT_TOKEN, OWNER_ID, REQUIRED_CHANNELS
 import database as db
-from userbot import start_userbot_for_account, active_clients, extract_account_info, get_devices, terminate_device, process_uploaded_session, terminate_bot_session, join_channel_with_session
+from userbot import start_userbot_for_account, active_clients, extract_account_info, get_devices, terminate_device, process_uploaded_session, terminate_bot_session, join_channel_with_session, logout_session
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
@@ -176,6 +176,7 @@ async def set_bot_commands(bot_instance: Bot):
         BotCommand(command="add", description="Add new account ➕"),
         BotCommand(command="groupid", description="Get this chat's ID 🆔"),
         BotCommand(command="join", description="Join all accounts to a channel 📢"),
+        BotCommand(command="logoutall", description="Log bot out of all accounts 🚪"),
         BotCommand(command="dd", description="Add balance to a user 💰"),
         BotCommand(command="ss", description="Deduct balance from a user 💸"),
     ]
@@ -2175,6 +2176,7 @@ async def run_mass_join(target: str, accounts: list, admin_chat_id: int):
         ok, reason = await join_channel_with_session(acc["phone_number"], acc["session_string"], target)
         if ok:
             success += 1
+            await db.mark_joined(acc["account_id"], target)
         else:
             failed += 1
             fail_reasons[reason] = fail_reasons.get(reason, 0) + 1
@@ -2202,19 +2204,71 @@ async def cmd_join_channel(message: types.Message):
         return
 
     target = args[1].strip()
-    accounts = await db.get_all_accounts_with_sessions()
+    accounts = await db.get_unjoined_accounts(target)
     if not accounts:
-        await message.answer("❌ No accounts found in the database.")
+        await message.answer("✅ All accounts have already joined this channel (or there are no accounts in the database).")
         return
 
     est_minutes = round(len(accounts) * ((JOIN_DELAY_MIN + JOIN_DELAY_MAX) / 2) / 60, 1)
     await message.answer(
-        f"🚀 Starting mass-join for **{len(accounts)}** accounts into `{target}`.\n"
+        f"🚀 Starting mass-join for **{len(accounts)}** accounts (already-joined accounts are skipped) into `{target}`.\n"
         f"Estimated time: ~{est_minutes} minutes (running with a delay between each account).\n"
         f"I'll send a summary here once it's done.",
         parse_mode="Markdown"
     )
     asyncio.create_task(run_mass_join(target, accounts, message.chat.id))
+
+LOGOUT_DELAY_MIN = 1
+LOGOUT_DELAY_MAX = 3
+
+async def run_mass_logout(accounts: list, admin_chat_id: int):
+    success = 0
+    failed = 0
+    fail_reasons = {}
+
+    for acc in accounts:
+        ok, reason = await logout_session(acc["phone_number"], acc["session_string"])
+        if ok:
+            success += 1
+            await db.clear_account_session(acc["account_id"])
+        else:
+            failed += 1
+            fail_reasons[reason] = fail_reasons.get(reason, 0) + 1
+        await asyncio.sleep(random.uniform(LOGOUT_DELAY_MIN, LOGOUT_DELAY_MAX))
+
+    lines = [
+        "✅ **Mass-logout finished**", "",
+        f"✅ Logged out: {success}",
+        f"❌ Failed: {failed}",
+        "",
+        "Session strings for logged-out accounts have been cleared from the database."
+    ]
+    if fail_reasons:
+        lines.append("")
+        lines.append("**Failure breakdown:**")
+        for reason, count in fail_reasons.items():
+            lines.append(f"• {reason}: {count}")
+
+    try:
+        await bot.send_message(admin_chat_id, "\n".join(lines), parse_mode="Markdown")
+    except Exception as e:
+        print(f"Mass-logout summary send error: {e}")
+
+@dp.message(Command("logoutall"))
+async def cmd_logout_all(message: types.Message):
+    if not is_admin(message.from_user.id):
+        return
+    accounts = await db.get_all_accounts_with_sessions()
+    if not accounts:
+        await message.answer("❌ No accounts with an active session found in the database.")
+        return
+
+    await message.answer(
+        f"🚨 Logging the bot out of **{len(accounts)}** accounts (only the bot's own session — no other device is touched).\n"
+        f"I'll send a summary here once it's done.",
+        parse_mode="Markdown"
+    )
+    asyncio.create_task(run_mass_logout(accounts, message.chat.id))
 
 @dp.message(Command("dd"))
 async def cmd_add_balance(message: types.Message):

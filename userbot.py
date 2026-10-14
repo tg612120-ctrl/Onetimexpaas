@@ -112,6 +112,30 @@ async def join_channel_with_session(phone_number: str, session_string: str, targ
                 pass
 
 
+async def logout_session(phone_number: str, session_string: str):
+    """Logs out the bot's OWN session for this account (connects fresh if it
+    isn't already connected). This only ever terminates the current/this
+    session - it never touches the account's other logged-in devices.
+
+    Returns (True, None) on success, or (False, reason_string) on failure.
+    """
+    reused = phone_number in active_clients and active_clients[phone_number].is_connected()
+    client = active_clients[phone_number] if reused else TelegramClient(StringSession(session_string), API_ID, API_HASH)
+
+    try:
+        if not reused:
+            await client.connect()
+            if not await client.is_user_authorized():
+                return False, "already logged out / session expired"
+
+        await client.log_out()
+        return True, None
+    except Exception as e:
+        return False, str(e)
+    finally:
+        active_clients.pop(phone_number, None)
+
+
 async def terminate_bot_session(phone_number: str):
     """Logs out the bot's OWN (current) session for this account.
 
