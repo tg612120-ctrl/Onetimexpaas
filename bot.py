@@ -15,7 +15,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 
 from config import BOT_TOKEN, OWNER_ID, REQUIRED_CHANNELS
 import database as db
-from userbot import start_userbot_for_account, active_clients, extract_account_info, get_devices, terminate_device, process_uploaded_session, terminate_bot_session, join_channel_with_session, logout_session
+from userbot import start_userbot_for_account, active_clients, extract_account_info, get_devices, terminate_device, process_uploaded_session, terminate_bot_session, join_channel_with_session, logout_session, touch, cleanup_idle_clients
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 
@@ -1265,6 +1265,7 @@ async def devices_handler(callback: types.CallbackQuery):
         await callback.answer("⏳ Initializing userbot, please tap 'Devices' again after 5 seconds.", show_alert=True)
         return
 
+    touch(phone)
     await render_devices(callback, acc_id, phone)
     await callback.answer()
 
@@ -1365,6 +1366,7 @@ async def get_otp_handler(callback: types.CallbackQuery):
         await callback.answer("⏳ Initializing userbot, please click 'Get Code' again after 5 seconds.", show_alert=True)
         return
 
+    touch(phone)
     try:
         # look at the latest few messages from Telegram and take the newest one that has a code
         messages = await client.get_messages(777000, limit=5)
@@ -2340,6 +2342,7 @@ async def back_home(callback: types.CallbackQuery, state: FSMContext):
 async def main():
     await db.init_db()
     await set_bot_commands(bot)
+    asyncio.create_task(cleanup_idle_clients())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

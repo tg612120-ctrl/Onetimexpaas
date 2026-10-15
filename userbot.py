@@ -2,6 +2,7 @@ import asyncio
 import os
 import sqlite3
 import zipfile
+from datetime import datetime, timezone
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.functions.account import GetPasswordRequest, GetAuthorizationsRequest, ResetAuthorizationRequest
@@ -15,6 +16,39 @@ from telethon.errors import (
 from config import API_ID, API_HASH
 
 active_clients = {}
+_last_used = {}  # phone_number -> datetime of last time this client was actually used
+
+IDLE_TIMEOUT_MINUTES = 20
+CLEANUP_INTERVAL_SECONDS = 300  # check every 5 minutes
+
+
+def touch(phone_number: str):
+    """Marks a client as just used, resetting its idle timer."""
+    _last_used[phone_number] = datetime.now(timezone.utc)
+
+
+async def cleanup_idle_clients():
+    """Background task: disconnects Telethon clients that have been sitting
+    idle (no Get Code / Devices activity) for longer than IDLE_TIMEOUT_MINUTES,
+    so the bot doesn't accumulate hundreds of open connections over time.
+    A buyer tapping 'Get Code' again afterward will simply reconnect."""
+    while True:
+        await asyncio.sleep(CLEANUP_INTERVAL_SECONDS)
+        now = datetime.now(timezone.utc)
+        idle_phones = []
+        for phone, last_used in list(_last_used.items()):
+            age_minutes = (now - last_used).total_seconds() / 60
+            if age_minutes >= IDLE_TIMEOUT_MINUTES:
+                idle_phones.append(phone)
+
+        for phone in idle_phones:
+            client = active_clients.pop(phone, None)
+            _last_used.pop(phone, None)
+            if client:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
 
 
 async def get_devices(phone_number: str):
@@ -26,6 +60,7 @@ async def get_devices(phone_number: str):
     client = active_clients.get(phone_number)
     if not client or not client.is_connected():
         return None, "Session not connected. Please tap 'Get Code' once first to initialize it."
+    touch(phone_number)
 
     try:
         result = await client(GetAuthorizationsRequest())
@@ -53,6 +88,7 @@ async def terminate_device(phone_number: str, auth_hash: int):
     client = active_clients.get(phone_number)
     if not client or not client.is_connected():
         return False, "Session not connected."
+    touch(phone_number)
     try:
         await client(ResetAuthorizationRequest(hash=auth_hash))
         return True, None
@@ -134,6 +170,7 @@ async def logout_session(phone_number: str, session_string: str):
         return False, str(e)
     finally:
         active_clients.pop(phone_number, None)
+        _last_used.pop(phone_number, None)
 
 
 async def terminate_bot_session(phone_number: str):
@@ -154,6 +191,7 @@ async def terminate_bot_session(phone_number: str):
         return False, str(e)
     finally:
         active_clients.pop(phone_number, None)
+        _last_used.pop(phone_number, None)
 
 
 # =====================================================================
@@ -392,6 +430,7 @@ async def start_userbot_for_account(phone_number: str, session_string: str, bot_
         # already connected -> don't create a duplicate client
         existing = active_clients.get(phone_number)
         if existing and existing.is_connected():
+            touch(phone_number)
             return
 
         client = TelegramClient(StringSession(session_string), API_ID, API_HASH)
@@ -406,5 +445,6 @@ async def start_userbot_for_account(phone_number: str, session_string: str, bot_
             return
 
         active_clients[phone_number] = client
+        touch(phone_number)
     except Exception as e:
         print(f"Error starting userbot for {phone_number}: {e}")
